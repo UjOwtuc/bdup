@@ -1,0 +1,11 @@
+[package]
+name = "bdup"
+version = "0.1.0"
+authors = ["Karsten Borgwaldt <kb@spambri.de>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+flate2 = "1.0"
+chrono = "0.4"
