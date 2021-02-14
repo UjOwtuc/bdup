@@ -3,6 +3,8 @@
 image: $CI_REGISTRY/docker/rust/rust:alpine
 
 test:cargo:
+  tags:
+    - docker
   script:
     - rustc --version && cargo --version  # Print version info for debugging
     - cargo test --workspace --verbose
