@@ -2,10 +2,23 @@
 
 image: $CI_REGISTRY/docker/rust/rust:alpine
 
+cache:
+  paths:
+    - .cargo
+
 test:cargo:
   tags:
     - docker
   script:
     - rustc --version && cargo --version  # Print version info for debugging
     - cargo test --workspace --verbose
+
+build:
+  tags:
+    - docker
+  script:
+    - cargo build
+  artifacts:
+    paths:
+      - target/debug/bdup
 
