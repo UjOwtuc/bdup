@@ -1,6 +1,6 @@
 # vim: set ft=yaml sw=2 ts=2 et :
 
-image: rust:latest
+image: $CI_REGISTRY/docker/rust/rust:alpine
 
 test:cargo:
   script:
