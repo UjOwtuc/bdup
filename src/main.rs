@@ -1,5 +1,6 @@
 use std::convert::{TryFrom, TryInto};
 use std::fmt;
+use std::str;
 use std::fs::File;
 use std::io::{BufReader, BufRead};
 use flate2::read::GzDecoder;
@@ -144,11 +145,12 @@ mod tests {
     }
 }
 
-impl TryFrom<&str> for Stat {
+impl TryFrom<&[u8]> for Stat {
     type Error = &'static str;
 
-    fn try_from(line: &str) -> Result<Self, Self::Error> {
-        let stat = line.split(" ").collect::<Vec<&str>>();
+    fn try_from(line: &[u8]) -> Result<Self, Self::Error> {
+        let source = str::from_utf8(line).unwrap();
+        let stat = source.split(" ").collect::<Vec<&str>>();
         let mut result = Self{ ..Default::default() };
         result.containing_device = burp_decode_base64(stat[0]).try_into().unwrap();
         result.inode = burp_decode_base64(stat[1]).try_into().unwrap();
@@ -175,19 +177,19 @@ impl TryFrom<&str> for Stat {
 
 struct ManifestEntry {
     file_type: FileType,
-    path: String,
+    path: Vec<u8>,
     stat: Stat,
-    data_path: Option<String>,
+    data_path: Option<Vec<u8>>,
     size: Option<u64>,
     md5: Option<String>,
-    link_target: Option<String>,
+    link_target: Option<Vec<u8>>,
 }
 
 impl ManifestEntry {
     fn new() -> Self {
         Self{
             file_type: FileType::Unknown,
-            path: String::new(),
+            path: Vec::new(),
             stat: Stat::default(),
             data_path: None,
             size: None,
@@ -215,9 +217,14 @@ impl fmt::Display for ManifestEntry {
             None => 0
         };
 
-        write!(f, "{} {:10} {:10} {:8} {} {}", self.stat.mode, owner, group, size, tstamp, self.path)?;
+        write!(f, "{} {:10} {:10} {:8} {} {}", self.stat.mode, owner, group, size, tstamp, String::from_utf8_lossy(&self.path))?;
         if self.file_type == FileType::SoftLink {
-            write!(f, " -> {}", "target")?;
+            if let Some(target) = &self.link_target {
+                write!(f, " -> {}", String::from_utf8_lossy(&target))?;
+            }
+            else {
+                write!(f, " -> (unknown target)")?;
+            }
         }
         Ok(())
     }
@@ -225,51 +232,64 @@ impl fmt::Display for ManifestEntry {
 
 
 fn entry_complete(entry: &ManifestEntry) {
-    println!("{}", entry);
+    if let Some(_) = entry.link_target {
+        println!("{}", entry);
+    }
 }
 
 
 fn main() {
     let manifest = File::open("manifest.gz").expect("Could not open manifest");
     let gz = GzDecoder::new(manifest);
-    let reader = BufReader::new(gz);
+    let mut reader = BufReader::new(gz);
     let mut entry = ManifestEntry::new();
     
-    for it in reader.lines() {
-        let line = it.unwrap();
-        let data = String::from(&line[5..]);
-        match line.chars().nth(0).unwrap() {
-            'r' => entry.stat = Stat::try_from(&data[..]).unwrap(),
-            'f' => {
+    let mut line = Vec::new();
+    while let Ok(size) = reader.read_until(b'\n', &mut line) {
+        if size < 4 {
+            println!("short read: {}", size);
+            break;
+        }
+
+        while (line[line.len() -1] as char).is_whitespace() {
+            line.pop();
+        }
+        let data = &line[5..];
+        match line[0] {
+            b'r' => entry.stat = Stat::try_from(&data[..]).unwrap(),
+            b'f' => {
                 entry.file_type = FileType::Plain;
-                entry.path = data;
+                entry.path = data.to_owned();
             },
-            'd' => {
+            b'd' => {
                 entry.file_type = FileType::Directory;
-                entry.path = data;
+                entry.path = data.to_owned();
                 entry_complete(&entry);
                 entry = ManifestEntry::new();
             },
-            'l' => {
+            b'l' => {
                 if entry.file_type == FileType::SoftLink {
-                    entry.link_target = Some(data);
+                    entry.link_target = Some(data.to_owned());
                     entry_complete(&entry);
                     entry = ManifestEntry::new();
                 }
                 else {
                     entry.file_type = FileType::SoftLink;
+                    entry.path = data.to_owned();
                 }
             },
-            'L' => entry.file_type = FileType::HardLink,
-            't' => entry.data_path = Some(data),
-            'x' => {
-                let val = data.split(":").collect::<Vec<&str>>();
+            b'L' => entry.file_type = FileType::HardLink,
+            b't' => entry.data_path = Some(data.to_owned()),
+            b'x' => {
+                let info = str::from_utf8(data).unwrap();
+                let val = info.split(":").collect::<Vec<&str>>();
                 entry.size = Some(val[0].parse::<u64>().unwrap());
                 entry.md5 = Some(val[1].to_owned());
                 entry_complete(&entry);
                 entry = ManifestEntry::new();
             },
-            _ => println!("Ignoring line starting with '{}'", line.chars().nth(0).unwrap())
+            _ => println!("Ignoring line starting with '{}'", line[0] as char)
         };
+        line.clear();
     }
 }
