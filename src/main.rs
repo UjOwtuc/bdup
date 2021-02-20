@@ -2,13 +2,10 @@ use std::collections::{HashMap, HashSet};
 use std::{env, error, str};
 use std::error::Error;
 use std::fs;
-use std::io::{self, BufReader};
+use std::io;
 use std::path::{Path, PathBuf};
 use flate2::read::GzDecoder;
 use std::process::{Command, Stdio};
-use md5;
-use log;
-use clap;
 
 mod manifest;
 use manifest::ManifestEntry;
@@ -53,7 +50,7 @@ impl Backup {
     fn from_path(path: &Path, name: &str) -> Result<Self, Box<dyn error::Error>> {
         if path.join(name).join("manifest.gz").exists() {
             let id = name[0..7].parse::<u32>()?;
-            Ok(Self{ base_dir: PathBuf::from(path), id: id, timestamp: name[8..].to_owned(), checksums: HashMap::new() })
+            Ok(Self{ base_dir: PathBuf::from(path), id, timestamp: name[8..].to_owned(), checksums: HashMap::new() })
         }
         else {
             Err(Box::new(manifest::ManifestReadError::new("no manifest.gz in given path")))
@@ -64,12 +61,16 @@ impl Backup {
         self.base_dir.join(format!("{:07} {}", self.id, self.timestamp))
     }
 
+    fn manifest_reader(&self) -> Result<io::BufReader<flate2::read::GzDecoder<fs::File>>, Box<dyn Error>> {
+        let manifest = fs::File::open(self.path().join("manifest.gz"))?;
+        let gz = GzDecoder::new(manifest);
+        Ok(io::BufReader::new(gz))
+    }
+
     fn load_checksums(&mut self) -> Result<(), Box<dyn Error>> {
         if self.checksums.is_empty() {
             log::info!("Loading checksums from backup {:?}", self.path());
-            let manifest = fs::File::open(self.path().join("manifest.gz"))?;
-            let gz = GzDecoder::new(manifest);
-            let mut reader = BufReader::new(gz);
+            let mut reader = self.manifest_reader()?;
 
             manifest::read_manifest(&mut reader, &mut |entry: &ManifestEntry| {
                 if let Some(md5) = &entry.md5 {
@@ -106,7 +107,7 @@ impl Backup {
 
         let manifest = fs::File::open(self.path().join("manifest.gz"))?;
         let gz = GzDecoder::new(manifest);
-        let mut reader = BufReader::new(gz);
+        let mut reader = io::BufReader::new(gz);
         manifest::read_manifest(&mut reader, &mut |entry: &ManifestEntry| {
             if entry.data_path.is_some() {
                 self.fetch_file(entry, src, base)?;
@@ -125,7 +126,7 @@ impl Backup {
 
         let manifest = fs::File::open(self.path().join("manifest.gz"))?;
         let gz = GzDecoder::new(manifest);
-        let mut reader = BufReader::new(gz);
+        let mut reader = io::BufReader::new(gz);
         manifest::read_manifest(&mut reader, &mut |entry: &ManifestEntry| {
             if let Some(checksum) = &entry.md5 {
                 files_in_manifest.insert(PathBuf::from(entry.data_path.as_ref().unwrap()));
@@ -266,6 +267,11 @@ fn main() {
             .long("log-level")
             .help("Set log level (trace, debug, info, warn, error)")
             .takes_value(true))
+        .arg(clap::Arg::with_name("clients")
+            .short("c")
+            .long("clients")
+            .help("Comma separated list of clients to work on")
+            .takes_value(true))
         .subcommand(clap::SubCommand::with_name("verify")
             .about("Verify integrity of backups"))
         .subcommand(clap::SubCommand::with_name("duplicate")
@@ -279,6 +285,12 @@ fn main() {
         .get_matches();
 
     let source_dir = matches.value_of("source").unwrap_or("/var/spool/burp");
+    let clients = if let Some(client_list) = matches.value_of("clients") {
+        client_list.split(',').map(String::from).collect()
+    }
+    else {
+        get_directories(&PathBuf::from(&source_dir)).expect("Could not get client list")
+    };
 
     if let Some(level) = matches.value_of("log_level") {
         env::set_var("RUST_LOG", level);
@@ -286,7 +298,7 @@ fn main() {
     pretty_env_logger::init();
 
     if matches.subcommand_matches("verify").is_some() {
-        verify(source_dir);
+        verify(source_dir, &clients);
     }
     else if let Some(matches) = matches.subcommand_matches("duplicate") {
         duplicate(source_dir, matches.value_of("dest_dir").unwrap());
@@ -302,9 +314,8 @@ fn verify_backups(base_dir: &Path) -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
-fn verify(source_dir: &str) {
+fn verify(source_dir: &str, clients: &[String]) {
     let base_dir = PathBuf::from(source_dir);
-    let clients = get_directories(&base_dir).expect("Could not get client list");
 
     let mut client_num = 0;
     let clients_total = clients.len();
@@ -313,7 +324,7 @@ fn verify(source_dir: &str) {
         log::info!("Verifying client {}/{}: {}", client_num, clients_total, &name);
 
         verify_backups(&base_dir.join(&name))
-            .unwrap_or_else(|_| panic!("Verify failed for client {}", name));
+            .unwrap_or_else(|err| panic!("Verify failed for client {}: {:?}", name, err));
     }
 }
 

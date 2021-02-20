@@ -60,7 +60,7 @@ impl From<&Mode> for String {
         if mode.mode & 0o4000 == 0o4000 {
             readable.replace_range(2..3, "s");
         }
-        return readable;
+        readable
     }
 }
 
@@ -135,37 +135,6 @@ fn burp_decode_base64(value: &str) -> i64 {
         result *= -1;
     }
     result
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decode() {
-        assert_eq!(burp_decode_base64("Po"), 1000);
-    }
-
-    #[test]
-    fn format_part() {
-        let mut val = String::new();
-        format_mode_part(0o7, &mut val);
-        assert_eq!(val, "rwx");
-
-        val.clear();
-        format_mode_part(0o6, &mut val);
-        assert_eq!(val, "rw-");
-
-        val.clear();
-        format_mode_part(0o1, &mut val);
-        assert_eq!(val, "--x");
-    }
-
-    #[test]
-    fn format_mode() {
-        let mode = Mode{ mode: 0o147 };
-        assert_eq!(String::from(&mode), "--xr--rwx");
-    }
 }
 
 impl TryFrom<&[u8]> for Stat {
@@ -254,21 +223,21 @@ impl fmt::Display for ManifestEntry {
     }
 }
 
-fn add_manifest_line(entry: &mut ManifestEntry, kind: &u8, data: &[u8]) -> Result<bool, Box<dyn Error>> {
+fn add_manifest_line(entry: &mut ManifestEntry, kind: &char, data: &[u8]) -> Result<bool, Box<dyn Error>> {
     let mut finished = false;
 
     match kind {
-        b'r' => entry.stat = Stat::try_from(&data[..])?,
-        b'f' => {
+        'r' => entry.stat = Stat::try_from(&data[..])?,
+        'f' => {
             entry.file_type = FileType::Plain;
             entry.path = PathBuf::from(OsStr::from_bytes(data));
         },
-        b'd' => {
+        'd' => {
             entry.file_type = FileType::Directory;
             entry.path = PathBuf::from(OsStr::from_bytes(data));
             finished = true;
         },
-        b'l' => {
+        'l' => {
             if entry.file_type == FileType::SoftLink {
                 entry.link_target = Some(PathBuf::from(OsStr::from_bytes(data)));
                 finished = true;
@@ -278,9 +247,9 @@ fn add_manifest_line(entry: &mut ManifestEntry, kind: &u8, data: &[u8]) -> Resul
                 entry.path = PathBuf::from(OsStr::from_bytes(data));
             }
         },
-        b'L' => entry.file_type = FileType::HardLink,
-        b't' => entry.data_path = Some(PathBuf::from(OsStr::from_bytes(data))),
-        b'x' => {
+        'L' => entry.file_type = FileType::HardLink,
+        't' => entry.data_path = Some(PathBuf::from(OsStr::from_bytes(data))),
+        'x' => {
             let info = str::from_utf8(data).unwrap();
             let val = info.split(':').collect::<Vec<&str>>();
             entry.size = Some(val[0].parse::<u64>().unwrap());
@@ -293,41 +262,91 @@ fn add_manifest_line(entry: &mut ManifestEntry, kind: &u8, data: &[u8]) -> Resul
     Ok(finished)
 }
 
+struct ManifestLine {
+    kind: char,
+    data: Vec<u8>
+}
+
+impl ManifestLine {
+    fn read<R: BufRead>(reader: &mut R) -> Result<Self, Box<dyn Error>> {
+        let kind = reader.fill_buf()?[0];
+        reader.consume(1);
+
+        let mut length_string: [u8; 4] = [0; 4];
+        reader.read_exact(&mut length_string)?;
+        let data_length = usize::from_str_radix(str::from_utf8(&length_string)?, 16)?;
+        let mut data = vec![0_u8; data_length];
+        reader.read_exact(&mut data)?;
+
+        // remove trailing line break
+        reader.fill_buf()?;
+        reader.consume(1);
+        Ok(Self{ kind: kind as char, data })
+    }
+}
+
 pub fn read_manifest<R: BufRead, T, F: FnMut(&ManifestEntry) -> Result<T, Box<dyn Error>>>(reader: &mut R, callback: &mut F) -> Result<(), Box<dyn Error>> {
     let mut entry = ManifestEntry::new();
-    let mut line = Vec::new();
 
-    let mut lineno = 0;
+    let mut entryno = 0;
     loop {
-        lineno += 1;
-        match reader.read_until(b'\n', &mut line) {
-            Ok(0) => break,
-            Ok(n @ 1 ..= 3) => {
-                log::debug!("Short read in line {}, buffer: {:?}", lineno, line);
-                return Err(Box::new(ManifestReadError::new(&format!("Short read of {} bytes", n))));
-            },
-            Ok(_) => (),
-            Err(e) => return Err(Box::new(e)),
-        };
-
-        while (line[line.len() -1] as char).is_whitespace() {
-            line.pop();
+        entryno += 1;
+        let buffer = reader.fill_buf()?;
+        if buffer.is_empty() {
+            break;
         }
-        let data = &line[5..];
 
-        match add_manifest_line(&mut entry, &line[0], data) {
+        let line = ManifestLine::read(reader)?;
+        match add_manifest_line(&mut entry, &line.kind, &line.data) {
             Ok(false) => (),
             Ok(true) => {
                 callback(&entry)?;
                 entry = ManifestEntry::new();
             },
             Err(err) => {
-                log::debug!("Error in line {}: {:?}", lineno, err);
-                return Err(Box::new(ManifestReadError::new(&format!("{}: Corrupt line in manifest: {:?}", lineno, err))));
+                log::debug!("Error in line {}: {:?}", entryno, err);
+                return Err(Box::new(ManifestReadError::new(&format!("{}: Corrupt line in manifest: {:?}", entryno, err))));
             }
         }
-        line.clear();
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn manifest_simple() {
+        let mut buf = std::io::Cursor::new("a0004ASDF\n");
+        let line = ManifestLine::read(&mut buf).unwrap();
+        assert_eq!(line.data, b"ASDF");
+    }
+
+    #[test]
+    fn decode() {
+        assert_eq!(burp_decode_base64("Po"), 1000);
+    }
+
+    #[test]
+    fn format_part() {
+        let mut val = String::new();
+        format_mode_part(0o7, &mut val);
+        assert_eq!(val, "rwx");
+
+        val.clear();
+        format_mode_part(0o6, &mut val);
+        assert_eq!(val, "rw-");
+
+        val.clear();
+        format_mode_part(0o1, &mut val);
+        assert_eq!(val, "--x");
+    }
+
+    #[test]
+    fn format_mode() {
+        let mode = Mode{ mode: 0o147 };
+        assert_eq!(String::from(&mode), "--xr--rwx");
+    }
 }
 
