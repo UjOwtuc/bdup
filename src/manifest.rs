@@ -114,17 +114,17 @@ fn burp_decode_base64(value: &str) -> i64 {
 
     let mut val = value;
     // i don't care about leading spaces. do i need to?
-    if value.chars().nth(0).unwrap() == '-' {
+    if let Some(stripped) = value.strip_prefix('-') {
         negative = true;
-        val = &value[1..];
+        val = stripped;
     }
 
     for c in val.chars() {
         result <<= 6;
         match c {
-            'A' ..= 'Z' => result += (c as u8 - 'A' as u8) as i64,
-            'a' ..= 'z' => result += (c as u8 - 'a' as u8) as i64 + 26,
-            '0' ..= '9' => result += (c as u8 - '0' as u8) as i64 + 32,
+            'A' ..= 'Z' => result += (c as u8 - b'A') as i64,
+            'a' ..= 'z' => result += (c as u8 - b'a') as i64 + 26,
+            '0' ..= '9' => result += (c as u8 - b'0') as i64 + 32,
             '+' => result += 62,
             '/' => result += 63,
             _ => panic!()
@@ -134,7 +134,7 @@ fn burp_decode_base64(value: &str) -> i64 {
     if negative {
         result *= -1;
     }
-    return result;
+    result
 }
 
 #[cfg(test)]
@@ -173,7 +173,7 @@ impl TryFrom<&[u8]> for Stat {
 
     fn try_from(line: &[u8]) -> Result<Self, Self::Error> {
         let source = str::from_utf8(line).map_err(|err| ManifestReadError::new(&format!("Non utf8 chars in stat line: {:?}", err)))?;
-        let stat = source.split(" ").collect::<Vec<&str>>();
+        let stat = source.split(' ').collect::<Vec<&str>>();
         if stat.len() < 16 {
             return Err(ManifestReadError::new(&format!("Too few entries in stat line. Expected 16, found {}", stat.len())));
         }
@@ -198,7 +198,7 @@ impl TryFrom<&[u8]> for Stat {
         // result.encryption = burp_decode_base64(stat[16]).try_into().unwrap();
         // result.salt = stat[17].to_owned();
 
-        return Ok(result);
+        Ok(result)
     }
 }
 
@@ -239,10 +239,7 @@ impl fmt::Display for ManifestEntry {
         let group = format!("{}", self.stat.group_id);
         let tstamp = NaiveDateTime::from_timestamp(self.stat.mod_time.try_into().unwrap(), 0);
 
-        let size = match self.size {
-            Some(bytes) => bytes,
-            None => 0
-        };
+        let size = self.size.unwrap_or(0);
 
         write!(f, "{} {:10} {:10} {:8} {} {:?}", self.stat.mode, owner, group, size, tstamp, &self.path)?;
         if self.file_type == FileType::SoftLink {
@@ -285,7 +282,7 @@ fn add_manifest_line(entry: &mut ManifestEntry, kind: &u8, data: &[u8]) -> Resul
         b't' => entry.data_path = Some(PathBuf::from(OsStr::from_bytes(data))),
         b'x' => {
             let info = str::from_utf8(data).unwrap();
-            let val = info.split(":").collect::<Vec<&str>>();
+            let val = info.split(':').collect::<Vec<&str>>();
             entry.size = Some(val[0].parse::<u64>().unwrap());
             entry.md5 = Some(val[1].to_owned());
             finished = true;

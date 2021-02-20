@@ -1,8 +1,8 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::{env, error, str};
 use std::error::Error;
 use std::fs;
-use std::io::{self, BufReader, Read};
+use std::io::{self, BufReader};
 use std::path::{Path, PathBuf};
 use flate2::read::GzDecoder;
 use std::process::{Command, Stdio};
@@ -108,7 +108,7 @@ impl Backup {
         let gz = GzDecoder::new(manifest);
         let mut reader = BufReader::new(gz);
         manifest::read_manifest(&mut reader, &mut |entry: &ManifestEntry| {
-            if let Some(_) = &entry.data_path {
+            if entry.data_path.is_some() {
                 self.fetch_file(entry, src, base)?;
             }
             Ok(())
@@ -121,11 +121,14 @@ impl Backup {
 
     fn verify(&mut self) -> Result<(), Box<dyn error::Error>> {
         let data_path = self.path().join("data");
+        let mut files_in_manifest = HashSet::new();
+
         let manifest = fs::File::open(self.path().join("manifest.gz"))?;
         let gz = GzDecoder::new(manifest);
         let mut reader = BufReader::new(gz);
         manifest::read_manifest(&mut reader, &mut |entry: &ManifestEntry| {
             if let Some(checksum) = &entry.md5 {
+                files_in_manifest.insert(PathBuf::from(entry.data_path.as_ref().unwrap()));
                 let mut input = fs::File::open(data_path.join(entry.data_path.as_ref().unwrap()))?;
                 let digest = if entry.stat.compression > 0 {
                     calc_md5(&mut GzDecoder::new(input))
@@ -143,22 +146,7 @@ impl Backup {
 
         visit_dirs(&data_path, &|entry: &fs::DirEntry| -> Result<(), Box<dyn error::Error>> {
             let path = entry.path().strip_prefix(&data_path)?.to_owned();
-            if let Some(checksum) = &self.checksums.get(&path) {
-                let mut ctx = md5::Context::new();
-                let mut input = fs::File::open(entry.path())?;
-                let mut buf = vec![0_u8; 4096];
-                while let Ok(len) = input.read(&mut buf) {
-                    ctx.consume(&buf[0..len]);
-                    if len != 4096 {
-                        break;
-                    }
-                }
-                let digest = format!("{:x}", ctx.compute());
-                if **checksum != digest {
-                    log::error!("Incorrect checksum: {:?} expected: {}, computed: {}", path, checksum, digest);
-                }
-            }
-            else {
+            if ! files_in_manifest.contains(&path) {
                 log::info!("Found superfluous file while validating: {:?}", path);
             }
             Ok(())
@@ -187,12 +175,9 @@ fn max_id_less_than<T, I: Iterator<Item = T>>(iterator: &mut I, bound: T) -> Opt
         I::Item: Ord,
         T: Clone,
 {
-    let result = iterator
+    iterator
         .filter(|it| *it < bound)
         .max()
-        .clone();
-
-    result
 }
 
 fn copy_backup(src_dir: &PathBuf, dest_dir: &PathBuf, backup_name: &str, existing_backups: &mut HashMap<u32, Backup>) -> Result<(), Box<dyn error::Error>> {
@@ -216,7 +201,7 @@ fn copy_backup(src_dir: &PathBuf, dest_dir: &PathBuf, backup_name: &str, existin
             .map(|result| result.unwrap())
             .filter(|entry| entry.path().is_file())
             .for_each(move |entry| fs::remove_file(entry.path())
-                .expect(&format!("Could not remove regular file {:?}", entry.path())));
+                .unwrap_or_else(|_| panic!("Could not remove regular file {:?}", entry.path())));
         existing_backups.get_mut(&id).unwrap().load_checksums()?;
         base_backup = existing_backups.get(&id);
     }
@@ -258,7 +243,7 @@ fn duplicate_backups(src: &PathBuf, dest: &PathBuf) -> Result<(), Box<dyn error:
         let backup = Backup::from_path(&dest, &name)?;
         existing_backups.insert(backup.id, backup);
     }
-    while to_copy.len() > 0 {
+    while ! to_copy.is_empty() {
         copy_backup(&src, &dest, &to_copy.pop().unwrap(), &mut existing_backups)?;
     }
 
@@ -300,9 +285,7 @@ fn main() {
     }
     pretty_env_logger::init();
 
-    println!("source dir: {}", source_dir);
-
-    if let Some(_) = matches.subcommand_matches("verify") {
+    if matches.subcommand_matches("verify").is_some() {
         verify(source_dir);
     }
     else if let Some(matches) = matches.subcommand_matches("duplicate") {
@@ -329,7 +312,8 @@ fn verify(source_dir: &str) {
         client_num += 1;
         log::info!("Verifying client {}/{}: {}", client_num, clients_total, &name);
 
-        verify_backups(&base_dir.join(&name)).expect(&format!("Verify failed for client {}", name));
+        verify_backups(&base_dir.join(&name))
+            .unwrap_or_else(|_| panic!("Verify failed for client {}", name));
     }
 }
 
@@ -355,6 +339,6 @@ fn duplicate(from: &str, to: &str) {
                 .expect("Could not create destination directory");
         }
         duplicate_backups(&base_dir.join(&name), &dest_dir.join(&name))
-            .expect(&format!("Error while duplicating backups of {}", name));
+            .unwrap_or_else(|_| panic!("Error while duplicating backups of {}", name));
     }
 }
