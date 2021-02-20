@@ -1,10 +1,12 @@
 use std::convert::{TryFrom, TryInto};
-use std::fmt;
-use std::str;
-use std::fs::File;
-use std::io::{BufReader, BufRead};
+use std::{env, error, fmt, str};
+use std::error::Error;
+use std::fs::{self, File};
+use std::io::{self, BufReader, BufRead};
+use std::path::PathBuf;
 use flate2::read::GzDecoder;
 use chrono::NaiveDateTime;
+use log;
 
 #[derive(Default)]
 struct Mode {
@@ -231,19 +233,46 @@ impl fmt::Display for ManifestEntry {
 }
 
 
-fn entry_complete(entry: &ManifestEntry) {
-    if let Some(_) = entry.link_target {
-        println!("{}", entry);
+#[derive(Debug)]
+struct ManifestReadError {
+    details: String
+}
+
+impl ManifestReadError {
+    fn new(msg: &str) -> ManifestReadError {
+        ManifestReadError{ details: msg.to_string() }
+    }
+}
+
+impl fmt::Display for ManifestReadError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.details)
+    }
+}
+
+impl Error for ManifestReadError {
+    fn description(&self) -> &str {
+        &self.details
     }
 }
 
 
-fn main() {
-    let manifest = File::open("manifest.gz").expect("Could not open manifest");
-    let gz = GzDecoder::new(manifest);
-    let mut reader = BufReader::new(gz);
+fn entry_complete(entry: &ManifestEntry, num_entries: &mut u32) -> Result<(), Box<dyn error::Error>> {
+    if let Some(_) = entry.link_target {
+        // println!("{}", entry);
+    }
+    match num_entries.checked_add(1) {
+        Some(n) => {
+            *num_entries = n;
+            Ok(())
+        },
+        None => Err(Box::new(ManifestReadError::new("Too many entries in manifest: integer overflow")))
+    }
+}
+
+
+fn read_manifest<R: BufRead, T, P>(reader: &mut R, param: &mut P, callback: fn(&ManifestEntry, &mut P) -> Result<T, Box<dyn error::Error>>) -> Result<(), Box<dyn error::Error>> {
     let mut entry = ManifestEntry::new();
-    
     let mut line = Vec::new();
     while let Ok(size) = reader.read_until(b'\n', &mut line) {
         if size < 4 {
@@ -264,13 +293,13 @@ fn main() {
             b'd' => {
                 entry.file_type = FileType::Directory;
                 entry.path = data.to_owned();
-                entry_complete(&entry);
+                callback(&entry, param)?;
                 entry = ManifestEntry::new();
             },
             b'l' => {
                 if entry.file_type == FileType::SoftLink {
                     entry.link_target = Some(data.to_owned());
-                    entry_complete(&entry);
+                    callback(&entry, param)?;
                     entry = ManifestEntry::new();
                 }
                 else {
@@ -285,11 +314,96 @@ fn main() {
                 let val = info.split(":").collect::<Vec<&str>>();
                 entry.size = Some(val[0].parse::<u64>().unwrap());
                 entry.md5 = Some(val[1].to_owned());
-                entry_complete(&entry);
+                callback(&entry, param)?;
                 entry = ManifestEntry::new();
             },
             _ => println!("Ignoring line starting with '{}'", line[0] as char)
         };
         line.clear();
     }
+    Ok(())
+}
+
+
+fn get_directories(base_dir: &PathBuf) -> io::Result<Vec<String>> {
+    let mut dirs = Vec::new();
+    for dir_entry in fs::read_dir(base_dir)? {
+        let entry = dir_entry?;
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            if let Some(name) = entry.file_name().to_str() {
+                dirs.push(name.to_owned());
+            }
+        }
+    }
+
+    Ok(dirs)
+}
+
+fn duplicate_backups(src: &PathBuf, dest: &PathBuf) -> Result<(), Box<dyn error::Error>> {
+    let existing: Vec<String> = get_directories(dest)?
+        .iter()
+        .filter(|item| dest.join(item).join(".bdup.finished").exists())
+        .map(|e| e.to_owned())
+        .collect();
+    let to_copy: Vec<String> = get_directories(src)?
+        .iter()
+        .filter(|item| ! existing.contains(item))
+        .map(|e| e.to_owned())
+        .collect();
+
+    println!("existing:");
+    for tc in existing {
+        println!("\t{}", tc);
+    }
+
+    println!("to copy:");
+    for tc in to_copy {
+        println!("\t{}", tc);
+    }
+
+    Ok(())
+}
+
+
+fn main() {
+    let log_level = "RUST_LOG";
+    if let None = env::var_os(log_level) {
+        env::set_var(log_level, "DEBUG");
+    }
+    pretty_env_logger::init();
+
+    let base_dir = PathBuf::from(".");
+    // let clients = get_clients("/var/spool/burp").expect("Could not get client list");
+    let clients = get_directories(&base_dir).expect("Could not get client list");
+
+    let dest_dir = PathBuf::from("/tmp/asd");
+    if ! dest_dir.as_path().exists() {
+        log::info!("Creating destination directory {:?}", dest_dir);
+        fs::create_dir(dest_dir.as_path()).expect("Could not create destination directory");
+    }
+
+    let mut client_num = 0;
+    let clients_total = clients.len();
+    for name in clients {
+        client_num += 1;
+        log::info!("Duplicating client {}/{}: {}", client_num, clients_total, name);
+
+        if ! dest_dir.join(&name).as_path().exists() {
+            log::info!("Creating client destination directory: {:?}", dest_dir.join(&name));
+            fs::create_dir(dest_dir.join(&name).as_path())
+                .expect("Could not create destination directory");
+        }
+        duplicate_backups(&base_dir.join(&name), &dest_dir.join(&name))
+            .expect(&format!("Error while duplicating backups of {}", name));
+    }
+
+    let manifest = File::open("manifest.gz").expect("Could not open manifest");
+    let gz = GzDecoder::new(manifest);
+    let mut reader = BufReader::new(gz);
+
+    let mut num_entries = 0;
+    read_manifest(&mut reader, &mut num_entries, entry_complete).expect("Failed to read manifest");
+
+    println!("Read manifest with {} entries", num_entries);
 }
