@@ -1,16 +1,14 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::{env, error, str};
-use std::error::Error;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::os::unix::ffi::OsStrExt;
-use flate2::read::GzDecoder;
 use std::process::{Command, Stdio};
 
 mod manifest;
-use manifest::ManifestEntry;
-
+mod backup;
+use backup::Backup;
 
 fn get_directories(base_dir: &Path) -> io::Result<Vec<String>> {
     let mut dirs = Vec::new();
@@ -25,163 +23,6 @@ fn get_directories(base_dir: &Path) -> io::Result<Vec<String>> {
     }
 
     Ok(dirs)
-}
-
-fn calc_md5<T: io::Read>(reader: &mut T) -> io::Result<md5::Digest> {
-    let mut ctx = md5::Context::new();
-    let mut buf = vec![0_u8; 4096];
-    loop {
-        let len = reader.read(&mut buf)?;
-        ctx.consume(&buf[0..len]);
-        if len == 0 {
-            break;
-        }
-    }
-    Ok(ctx.compute())
-}
-
-struct Backup {
-    base_dir: PathBuf,
-    id: u32,
-    timestamp: String,
-    checksums: HashMap<PathBuf, String>
-}
-
-impl Backup {
-    fn from_path(path: &Path, name: &str) -> Result<Self, Box<dyn error::Error>> {
-        if path.join(name).join("manifest.gz").exists() {
-            let id = name[0..7].parse::<u32>()?;
-            Ok(Self{ base_dir: PathBuf::from(path), id, timestamp: name[8..].to_owned(), checksums: HashMap::new() })
-        }
-        else {
-            Err(Box::new(manifest::ManifestReadError::new("no manifest.gz in given path")))
-        }
-    }
-
-    fn path(&self) -> PathBuf {
-        self.base_dir.join(format!("{:07} {}", self.id, self.timestamp))
-    }
-
-    fn manifest_reader(&self) -> Result<io::BufReader<flate2::read::GzDecoder<fs::File>>, Box<dyn Error>> {
-        let manifest = fs::File::open(self.path().join("manifest.gz"))?;
-        let gz = GzDecoder::new(manifest);
-        Ok(io::BufReader::new(gz))
-    }
-
-    fn load_checksums(&mut self) -> Result<(), Box<dyn Error>> {
-        if self.checksums.is_empty() {
-            log::info!("Loading checksums from backup {:?}", self.path());
-            let mut reader = self.manifest_reader()?;
-
-            manifest::read_manifest(&mut reader, &mut |entry: &ManifestEntry| {
-                if let Some(md5) = &entry.md5 {
-                    self.checksums.insert(PathBuf::from(&entry.path), md5.to_owned());
-                }
-                Ok(())
-            })?;
-        }
-        Ok(())
-    }
-
-    fn fetch_file(&self, entry: &ManifestEntry, src: &Backup, base: &Option<&Backup>) -> Result<(), Box<dyn Error>> {
-        if let Some(base_backup) = base {
-            if let Some(base_md5) = &base_backup.checksums.get(&entry.path) {
-                let md5 = entry.md5.as_ref().unwrap();
-                if md5 == *base_md5 {
-                    return Ok(())
-                }
-            }
-        }
-        if let Some(path) = &entry.data_path {
-            let rel_path = PathBuf::from("data").join(&path);
-            fs::copy(src.path().join(&rel_path), self.path().join(&rel_path))?;
-        }
-        Ok(())
-    }
-
-    fn clone_from(&mut self, src: &Backup, base: &Option<&Backup>) -> Result<(), Box<dyn Error>> {
-        if let Some(base_backup) = base {
-            assert!(! base_backup.checksums.is_empty());
-        }
-
-        fs::copy(src.path().join("manifest.gz"), self.path().join("manifest.gz"))?;
-
-        let manifest = fs::File::open(self.path().join("manifest.gz"))?;
-        let gz = GzDecoder::new(manifest);
-        let mut reader = io::BufReader::new(gz);
-        manifest::read_manifest(&mut reader, &mut |entry: &ManifestEntry| {
-            if entry.data_path.is_some() {
-                self.fetch_file(entry, src, base)?;
-            }
-            Ok(())
-        })?;
-
-        self.verify()?;
-        fs::File::create(self.path().join(".bdup.finished"))?;
-        Ok(())
-    }
-
-    fn verify(&mut self) -> Result<u64, Box<dyn error::Error>> {
-        let data_path = self.path().join("data");
-        let mut files_in_manifest = HashSet::new();
-
-        let manifest = fs::File::open(self.path().join("manifest.gz"))?;
-        let gz = GzDecoder::new(manifest);
-        let mut reader = io::BufReader::new(gz);
-
-        let mut errors = 0;
-        manifest::read_manifest(&mut reader, &mut |entry: &ManifestEntry| {
-            if let Some(checksum) = &entry.md5 {
-                log::debug!("Verifying checksum of {:?}", entry.path);
-                files_in_manifest.insert(PathBuf::from(entry.data_path.as_ref().unwrap()));
-                let file_path = &data_path.join(entry.data_path.as_ref().unwrap());
-                let result = verify_file_md5(file_path, checksum);
-                match result {
-                    Ok((true, _)) => (), // checksum correct
-                    Ok((false, computed)) => {
-                        log::error!("File's checksum did not match {:?}. Expected: {}, computed: {}", file_path, checksum, computed);
-                        errors += 1;
-                    },
-                    Err(err) => {
-                        log::error!("Error while computing checksum for {:?}: {:?}", file_path, err);
-                        errors += 1;
-                    }
-                };
-            }
-            Ok(())
-        })?;
-
-        visit_dirs(&data_path, &|entry: &fs::DirEntry| -> Result<(), Box<dyn error::Error>> {
-            let path = entry.path().strip_prefix(&data_path)?.to_owned();
-            if ! files_in_manifest.contains(&path) {
-                log::info!("Found superfluous file while validating: {:?}", path);
-            }
-            Ok(())
-        })?;
-        Ok(errors)
-    }
-}
-
-fn verify_file_md5(file: &Path, md5: &str) -> io::Result<(bool, String)> {
-    let input = fs::File::open(file)?;
-    let digest = format!("{:x}", calc_md5(&mut GzDecoder::new(input))?);
-
-    Ok((md5 == digest, digest))
-}
-
-fn visit_dirs(dir: &Path, cb: &dyn Fn(&fs::DirEntry) -> Result<(), Box<dyn error::Error>>) -> Result<(), Box<dyn error::Error>> {
-    if dir.is_dir() {
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                visit_dirs(&path, cb)?;
-            } else {
-                cb(&entry)?;
-            }
-        }
-    }
-    Ok(())
 }
 
 fn max_id_less_than<T, I: Iterator<Item = T>>(iterator: &mut I, bound: T) -> Option<T>
@@ -290,6 +131,7 @@ fn main() {
             .long("single-backup")
             .help("Operate on given single backup path only")
             .conflicts_with("clients")
+            .conflicts_with("source_dir")
             .takes_value(true))
         .subcommand(clap::SubCommand::with_name("verify")
             .about("Verify integrity of backups"))
@@ -316,62 +158,35 @@ fn main() {
     }
     pretty_env_logger::init();
 
-    if matches.subcommand_matches("verify").is_some() {
-        if let Some(path) = matches.value_of("single_backup") {
-            verify_single_backup(&PathBuf::from(path))
-                .unwrap_or_else(|err| panic!(format!("Verify of backup {:?} failed: {:?}", path, err)));
+    let mut backups = Vec::new();
+    if let Some(path) = matches.value_of("single_backup") {
+        let path = PathBuf::from(path);
+        let parent = path.parent().unwrap();
+        let name = str::from_utf8(path.file_name().unwrap().as_bytes()).unwrap();
+        backups.push(Backup::from_path(parent, name).unwrap());
+    }
+    else {
+        let source_dir = PathBuf::from(source_dir);
+        for client in clients {
+            backups.extend(backup::find_backups(&source_dir.join(client)).unwrap());
         }
-        else {
-            verify(source_dir, &clients);
+    }
+
+    let mut current_backup = 0;
+    let total_backups = backups.len();
+    if matches.subcommand_matches("verify").is_some() {
+        for mut backup in backups {
+            current_backup += 1;
+            log::info!("Verifying backup {}/{}: {}", current_backup, total_backups, backup.display_name());
+            match backup.verify() {
+                Ok(0) => log::info!("Backup verified successfully"),
+                Ok(errors) => log::info!("Verification found {} errors", errors),
+                Err(err) => log::error!("Unable to verify backup: {:?}", err),
+            }
         }
     }
     else if let Some(matches) = matches.subcommand_matches("duplicate") {
         duplicate(source_dir, matches.value_of("dest_dir").unwrap());
-    }
-}
-
-fn verify_single_backup(path: &Path) -> Result<bool, Box<dyn Error>> {
-    log::info!("Verifying backup {:?}", path);
-    let parent = path.parent().unwrap();
-    let name = str::from_utf8(path.file_name().unwrap().as_bytes())?;
-    let mut backup = Backup::from_path(parent, name)?;
-
-    match backup.verify() {
-        Ok(0) => {
-            log::info!("Backup verified successfully");
-            Ok(true)
-        },
-        Ok(errors) => {
-            log::info!("Verification found {} errors", errors);
-            Ok(false)
-        }
-        Err(err) => {
-            log::error!("Unable to verify backup: {:?}", err);
-            Err(err)
-        }
-    }
-}
-
-fn verify_backups(base_dir: &Path) -> Result<(), Box<dyn Error>> {
-    for dir in get_directories(base_dir)? {
-        log::info!("Verifying backup {:?}", dir);
-        let mut backup = Backup::from_path(base_dir, &dir)?;
-        backup.verify()?;
-    }
-    Ok(())
-}
-
-fn verify(source_dir: &str, clients: &[String]) {
-    let base_dir = PathBuf::from(source_dir);
-
-    let mut client_num = 0;
-    let clients_total = clients.len();
-    for name in clients {
-        client_num += 1;
-        log::info!("Verifying client {}/{}: {}", client_num, clients_total, &name);
-
-        verify_backups(&base_dir.join(&name))
-            .unwrap_or_else(|err| panic!("Verify failed for client {}: {:?}", name, err));
     }
 }
 
