@@ -83,6 +83,8 @@ pub enum FileType {
     Directory,
     SoftLink,
     HardLink,
+    Metadata,
+    Special,
 }
 
 #[derive(Default)]
@@ -228,9 +230,20 @@ fn add_manifest_line(entry: &mut ManifestEntry, kind: &char, data: &[u8]) -> Res
 
     match kind {
         'r' => entry.stat = Stat::try_from(&data[..])?,
+        'm' => {
+            entry.file_type = FileType::Metadata;
+            entry.path = PathBuf::from(OsStr::from_bytes(data));
+        },
         'f' => {
             entry.file_type = FileType::Plain;
             entry.path = PathBuf::from(OsStr::from_bytes(data));
+        },
+        't' => entry.data_path = Some(PathBuf::from(OsStr::from_bytes(data))),
+        'L' => entry.file_type = FileType::HardLink,
+        's' => {
+            entry.file_type = FileType::Special;
+            entry.path = PathBuf::from(OsStr::from_bytes(data));
+            finished = true;
         },
         'd' => {
             entry.file_type = FileType::Directory;
@@ -247,8 +260,6 @@ fn add_manifest_line(entry: &mut ManifestEntry, kind: &char, data: &[u8]) -> Res
                 entry.path = PathBuf::from(OsStr::from_bytes(data));
             }
         },
-        'L' => entry.file_type = FileType::HardLink,
-        't' => entry.data_path = Some(PathBuf::from(OsStr::from_bytes(data))),
         'x' => {
             let info = str::from_utf8(data).unwrap();
             let val = info.split(':').collect::<Vec<&str>>();

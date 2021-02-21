@@ -4,6 +4,7 @@ use std::error::Error;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::os::unix::ffi::OsStrExt;
 use flate2::read::GzDecoder;
 use std::process::{Command, Stdio};
 
@@ -120,27 +121,32 @@ impl Backup {
         Ok(())
     }
 
-    fn verify(&mut self) -> Result<(), Box<dyn error::Error>> {
+    fn verify(&mut self) -> Result<u64, Box<dyn error::Error>> {
         let data_path = self.path().join("data");
         let mut files_in_manifest = HashSet::new();
 
         let manifest = fs::File::open(self.path().join("manifest.gz"))?;
         let gz = GzDecoder::new(manifest);
         let mut reader = io::BufReader::new(gz);
+
+        let mut errors = 0;
         manifest::read_manifest(&mut reader, &mut |entry: &ManifestEntry| {
             if let Some(checksum) = &entry.md5 {
+                log::debug!("Verifying checksum of {:?}", entry.path);
                 files_in_manifest.insert(PathBuf::from(entry.data_path.as_ref().unwrap()));
-                let mut input = fs::File::open(data_path.join(entry.data_path.as_ref().unwrap()))?;
-                let digest = if entry.stat.compression > 0 {
-                    calc_md5(&mut GzDecoder::new(input))
-                }
-                else {
-                    calc_md5(&mut input)
-                }?;
-                let digest = format!("{:x}", digest);
-                if **checksum != digest {
-                    log::error!("Incorrect checksum: {:?} expected: {}, computed: {}", entry.path, checksum, digest);
-                }
+                let file_path = &data_path.join(entry.data_path.as_ref().unwrap());
+                let result = verify_file_md5(file_path, checksum);
+                match result {
+                    Ok((true, _)) => (), // checksum correct
+                    Ok((false, computed)) => {
+                        log::error!("File's checksum did not match {:?}. Expected: {}, computed: {}", file_path, checksum, computed);
+                        errors += 1;
+                    },
+                    Err(err) => {
+                        log::error!("Error while computing checksum for {:?}: {:?}", file_path, err);
+                        errors += 1;
+                    }
+                };
             }
             Ok(())
         })?;
@@ -152,8 +158,15 @@ impl Backup {
             }
             Ok(())
         })?;
-        Ok(())
+        Ok(errors)
     }
+}
+
+fn verify_file_md5(file: &Path, md5: &str) -> io::Result<(bool, String)> {
+    let input = fs::File::open(file)?;
+    let digest = format!("{:x}", calc_md5(&mut GzDecoder::new(input))?);
+
+    Ok((md5 == digest, digest))
 }
 
 fn visit_dirs(dir: &Path, cb: &dyn Fn(&fs::DirEntry) -> Result<(), Box<dyn error::Error>>) -> Result<(), Box<dyn error::Error>> {
@@ -272,6 +285,12 @@ fn main() {
             .long("clients")
             .help("Comma separated list of clients to work on")
             .takes_value(true))
+        .arg(clap::Arg::with_name("single_backup")
+            .short("S")
+            .long("single-backup")
+            .help("Operate on given single backup path only")
+            .conflicts_with("clients")
+            .takes_value(true))
         .subcommand(clap::SubCommand::with_name("verify")
             .about("Verify integrity of backups"))
         .subcommand(clap::SubCommand::with_name("duplicate")
@@ -298,10 +317,38 @@ fn main() {
     pretty_env_logger::init();
 
     if matches.subcommand_matches("verify").is_some() {
-        verify(source_dir, &clients);
+        if let Some(path) = matches.value_of("single_backup") {
+            verify_single_backup(&PathBuf::from(path))
+                .unwrap_or_else(|err| panic!(format!("Verify of backup {:?} failed: {:?}", path, err)));
+        }
+        else {
+            verify(source_dir, &clients);
+        }
     }
     else if let Some(matches) = matches.subcommand_matches("duplicate") {
         duplicate(source_dir, matches.value_of("dest_dir").unwrap());
+    }
+}
+
+fn verify_single_backup(path: &Path) -> Result<bool, Box<dyn Error>> {
+    log::info!("Verifying backup {:?}", path);
+    let parent = path.parent().unwrap();
+    let name = str::from_utf8(path.file_name().unwrap().as_bytes())?;
+    let mut backup = Backup::from_path(parent, name)?;
+
+    match backup.verify() {
+        Ok(0) => {
+            log::info!("Backup verified successfully");
+            Ok(true)
+        },
+        Ok(errors) => {
+            log::info!("Verification found {} errors", errors);
+            Ok(false)
+        }
+        Err(err) => {
+            log::error!("Unable to verify backup: {:?}", err);
+            Err(err)
+        }
     }
 }
 
