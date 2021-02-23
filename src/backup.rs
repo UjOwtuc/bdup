@@ -4,8 +4,11 @@ use std::path::{Path, PathBuf};
 use std::fs;
 use std::io;
 use std::error::Error;
+use std::ffi::{OsString, OsStr};
 use std::os::unix::ffi::OsStrExt;
 use std::sync::mpsc::channel;
+use std::cmp::Ordering;
+use std::process::{Command, Stdio};
 use flate2::read::GzDecoder;
 use threadpool::ThreadPool;
 
@@ -37,6 +40,7 @@ struct VerifyFileResult {
     result: VerifyResult
 }
 
+#[derive(Eq)]
 pub struct Backup {
     pub base_dir: PathBuf,
     pub id: u32,
@@ -45,6 +49,11 @@ pub struct Backup {
 }
 
 impl Backup {
+    fn parse_name(name: &str) -> Result<(u32, String), Box<dyn Error>> {
+        let id = name[0..7].parse::<u32>()?;
+        Ok((id, name[8..].to_owned()))
+    }
+
     pub fn from_path(path: &Path, name: &str) -> Result<Self, Box<dyn Error>> {
         if path.join(name).join("manifest.gz").exists() {
             let id = name[0..7].parse::<u32>()?;
@@ -55,13 +64,25 @@ impl Backup {
         }
     }
 
+    pub fn new(base_dir: &Path, name: &str) -> Self {
+        let (id, timestamp) = Self::parse_name(name).unwrap();
+        Self{ base_dir: base_dir.to_owned(), id, timestamp, checksums: HashMap::new() }
+    }
+
     pub fn display_name(&self) -> String {
-        let client = format!("{:?}", self.base_dir.file_name().ok_or(""));
-        format!("client={}, id={}, timestamp={}", client, self.id, self.timestamp)
+        format!("client={}, id={}, timestamp={}", self.client(), self.id, self.timestamp)
+    }
+
+    pub fn client(&self) -> String {
+        self.base_dir.file_name().unwrap().to_string_lossy().to_string()
+    }
+
+    pub fn dirname(&self) -> String {
+        format!("{:07} {}", self.id, self.timestamp)
     }
 
     pub fn path(&self) -> PathBuf {
-        self.base_dir.join(format!("{:07} {}", self.id, self.timestamp))
+        self.base_dir.join(self.dirname())
     }
 
     fn manifest_reader(&self) -> Result<io::BufReader<flate2::read::GzDecoder<fs::File>>, Box<dyn Error>> {
@@ -85,41 +106,154 @@ impl Backup {
         Ok(())
     }
 
-    pub fn fetch_file(&self, entry: &ManifestEntry, src: &Backup, base: &Option<&Backup>) -> Result<(), Box<dyn Error>> {
-        if let Some(base_backup) = base {
-            if let Some(base_md5) = &base_backup.checksums.get(&entry.path) {
-                let md5 = entry.md5.as_ref().unwrap();
-                if md5 == *base_md5 {
-                    return Ok(())
-                }
+    pub fn fetch_data_file(identifier: &OsStr, dest: &Path) -> io::Result<u64> {
+        if let Some(parent) = dest.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        fs::copy(PathBuf::from(identifier), dest)
+    }
+
+    fn sibling_backups(&self) -> Result<Vec<Backup>, Box<dyn Error>> {
+        let mut backups = Vec::new();
+        for entry in fs::read_dir(&self.base_dir)? {
+            let entry = entry?.path();
+            if self.base_dir.join(&entry).join(".bdup.finished").exists() {
+                let name = entry.display().to_string();
+                backups.push(Backup::from_path(&self.base_dir, &name)?);
             }
         }
-        if let Some(path) = &entry.data_path {
-            let rel_path = PathBuf::from("data").join(&path);
-            fs::copy(src.path().join(&rel_path), self.path().join(&rel_path))?;
+        Ok(backups)
+    }
+
+    fn find_clone_base(&self) -> Option<Backup> {
+        if let Ok(siblings) = self.sibling_backups() {
+            siblings.into_iter()
+                .filter(|backup| backup.id < self.id)
+                .max()
+        }
+        else {
+            None
+        }
+    }
+
+    pub fn is_finished(&self) -> bool {
+        self.path().join(".bdup.finished").exists()
+    }
+
+    fn data_file_identifier(&self, path: &Path) -> OsString {
+        self.path().join("data").join(path).into_os_string()
+    }
+
+    pub fn clone_from(&mut self, src: &Backup) -> Result<(), Box<dyn Error>> {
+        if self.is_finished() {
+            log::info!("Cloning to {:?} already finished. Skipping", self.display_name());
+            return Ok(());
+        }
+
+        let base = if let Some(mut base_backup) = self.find_clone_base() {
+            log::info!("Using {} as base for {}", base_backup.display_name(), self.display_name());
+            base_backup.load_checksums()?;
+            Some(base_backup)
+        }
+        else {
+            log::info!("No suitable base for cloning into {}", self.display_name());
+            None
+        };
+
+        self.create_volume(&base)?;
+
+        let worker_pool = ThreadPool::new(2);
+        let (tx, rx) = channel();
+
+        let mut files_total = 0;
+        let mut files_from_base = 0;
+        fs::copy(src.path().join("manifest.gz"), self.path().join("manifest.gz"))?;
+        manifest::read_manifest(&mut self.manifest_reader()?, &mut |entry: &ManifestEntry| {
+            if let Some(data_path) = &entry.data_path {
+                files_total += 1;
+                let data_path = data_path.to_owned();
+                let mut copied = false;
+                if let Some(base) = &base {
+                    if let Some(base_md5) = &base.checksums.get(&entry.path) {
+                        if **base_md5 == entry.md5.clone().unwrap() {
+                            files_from_base += 1;
+                            copied = true;
+                        }
+                    }
+                }
+                if ! copied {
+                    let dest_path = self.path().join("data").join(&data_path);
+                    let source_id = src.data_file_identifier(&data_path);
+                    let tx = tx.clone();
+                    worker_pool.execute(move || {
+                        match Backup::fetch_data_file(&source_id, &dest_path) {
+                            Ok(_) => {
+                                tx.send(Ok((data_path, 0))).unwrap();  // TODO send file size
+                            },
+                            Err(error) => {
+                                log::error!("Could not fetch file {:?}: {:?}", source_id, error);
+                                tx.send(Err((data_path, format!("{}", error)))).unwrap();
+                            }
+                        };
+                    });
+                }
+            }
+            Ok(())
+        })?;
+        drop(tx);
+
+        let mut files_ok = 0;
+        let mut transfer_size = 0;
+        for result in rx.iter() {
+            if let Ok((_, size)) = result {
+                files_ok += 1;
+                transfer_size += size;
+            }
+        }
+
+        let errors = files_total - files_ok;
+        if errors == 0 {
+            log::info!("Cloning finished successfully: {} files total, {} from base backup, {} bytes transferred", files_total, files_from_base, transfer_size);
+            fs::File::create(self.path().join(".bdup.finished"))?;
+        }
+        else {
+            log::warn!("Cloning finished with errors: {}/{} files were successful, {} from base backup, {} bytes transferred", files_from_base + files_ok, files_total, files_from_base, transfer_size);
         }
         Ok(())
     }
 
-    pub fn clone_from(&mut self, src: &Backup, base: &Option<&Backup>) -> Result<(), Box<dyn Error>> {
-        if let Some(base_backup) = base {
-            assert!(! base_backup.checksums.is_empty());
+    fn create_volume(&self, base_backup: &Option<Backup>) -> Result<(), Box<dyn Error>> {
+        if ! self.base_dir.exists() {
+            fs::create_dir(&self.base_dir)?;
         }
+        if let Some(base_backup) = base_backup {
+            log::info!("Cloning previous backup {}", base_backup.display_name());
+            let status = Command::new("btrfs")
+                .arg("subvolume")
+                .arg("snapshot")
+                .arg(base_backup.path())
+                .arg(self.path())
+                .stdin(Stdio::null())
+                .status()?;
+            assert!(status.success());
 
-        fs::copy(src.path().join("manifest.gz"), self.path().join("manifest.gz"))?;
-
-        let manifest = fs::File::open(self.path().join("manifest.gz"))?;
-        let gz = GzDecoder::new(manifest);
-        let mut reader = io::BufReader::new(gz);
-        manifest::read_manifest(&mut reader, &mut |entry: &ManifestEntry| {
-            if entry.data_path.is_some() {
-                self.fetch_file(entry, src, base)?;
-            }
-            Ok(())
-        })?;
-
-        self.verify()?;
-        fs::File::create(self.path().join(".bdup.finished"))?;
+            fs::read_dir(self.path())?
+                .map(|result| result.unwrap())
+                .filter(|entry| entry.path().is_file())
+                .for_each(move |entry| fs::remove_file(entry.path())
+                    .unwrap_or_else(|_| panic!("Could not remove regular file {:?}", entry.path())));
+        }
+        else {
+            log::info!("Creating empty volume");
+            let status = Command::new("btrfs")
+                .arg("subvolume")
+                .arg("create")
+                .arg(self.path())
+                .stdin(Stdio::null())
+                .status()?;
+            assert!(status.success());
+            fs::create_dir(self.path().join("data"))?;
+        }
         Ok(())
     }
 
@@ -134,8 +268,10 @@ impl Backup {
         let worker_pool = ThreadPool::new(2);
         let (tx, rx) = channel();
 
+        let mut files_total = 0;
         manifest::read_manifest(&mut reader, &mut |entry: &ManifestEntry| {
             if let Some(checksum) = &entry.md5 {
+                files_total += 1;
                 files_in_manifest.insert(PathBuf::from(entry.data_path.as_ref().unwrap()));
 
                 let checksum = checksum.to_owned();
@@ -152,18 +288,17 @@ impl Backup {
             }
             Ok(())
         })?;
+        drop(tx);
 
-        let mut errors = 0;
+        let mut files_ok = 0;
         for result in rx.iter() {
             match result.result {
-                VerifyResult::Ok => (),
+                VerifyResult::Ok => files_ok += 1,
                 VerifyResult::ChecksumMismatch(computed) => {
                     log::error!("File's checksum did not match {:?}. Expected: {}, computed: {}", result.path, result.md5, computed);
-                    errors += 1;
                 },
                 VerifyResult::Error(err) => {
                     log::error!("Error while computing checksum for {:?}: {:?}", result.path, err);
-                    errors += 1;
                 }
             };
         }
@@ -175,7 +310,27 @@ impl Backup {
             }
             Ok(())
         })?;
-        Ok(errors)
+
+        log::info!("Verify finished: {}/{} files verified successfully", files_ok, files_total);
+        Ok(files_total - files_ok)
+    }
+}
+
+impl Ord for Backup {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.id.cmp(&other.id)
+    }
+}
+
+impl PartialOrd for Backup {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl PartialEq for Backup {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
     }
 }
 

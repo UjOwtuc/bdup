@@ -1,10 +1,8 @@
-use std::collections::HashMap;
-use std::{env, error, str};
+use std::{env, str};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::os::unix::ffi::OsStrExt;
-use std::process::{Command, Stdio};
 
 mod manifest;
 mod backup;
@@ -24,87 +22,6 @@ fn get_directories(base_dir: &Path) -> io::Result<Vec<String>> {
 
     Ok(dirs)
 }
-
-fn max_id_less_than<T, I: Iterator<Item = T>>(iterator: &mut I, bound: T) -> Option<T>
-    where
-        I::Item: Ord,
-        T: Clone,
-{
-    iterator
-        .filter(|it| *it < bound)
-        .max()
-}
-
-fn copy_backup(src_dir: &PathBuf, dest_dir: &PathBuf, backup_name: &str, existing_backups: &mut HashMap<u32, Backup>) -> Result<(), Box<dyn error::Error>> {
-
-    let src = Backup::from_path(src_dir, backup_name)?;
-    let base_id: Option<u32> = max_id_less_than(&mut existing_backups.keys().cloned(), src.id);
-    let mut base_backup = None;
-
-    if let Some(id) = base_id {
-        log::info!("Cloning previous backup {} as base for {}", id, src.id);
-        let status = Command::new("btrfs")
-            .arg("subvolume")
-            .arg("snapshot")
-            .arg(existing_backups[&id].path())
-            .arg(dest_dir.join(backup_name))
-            .stdin(Stdio::null())
-            .status()?;
-        assert!(status.success());
-
-        fs::read_dir(dest_dir.join(backup_name))?
-            .map(|result| result.unwrap())
-            .filter(|entry| entry.path().is_file())
-            .for_each(move |entry| fs::remove_file(entry.path())
-                .unwrap_or_else(|_| panic!("Could not remove regular file {:?}", entry.path())));
-        existing_backups.get_mut(&id).unwrap().load_checksums()?;
-        base_backup = existing_backups.get(&id);
-    }
-    else {
-        log::info!("No suitable base for cloning {}, creating empty directory", src.id);
-        let status = Command::new("btrfs")
-            .arg("subvolume")
-            .arg("create")
-            .arg(dest_dir.join(backup_name))
-            .stdin(Stdio::null())
-            .status()?;
-        assert!(status.success());
-        fs::create_dir(dest_dir.join(backup_name).join("data"))?;
-    }
-
-    let mut copied = Backup::from_path(dest_dir, backup_name)?;
-    copied.clone_from(&src, &base_backup)?;
-    Ok(())
-}
-
-fn duplicate_backups(src: &PathBuf, dest: &PathBuf) -> Result<(), Box<dyn error::Error>> {
-    let existing: Vec<String> = get_directories(dest)?
-        .iter()
-        .filter(|item| dest.join(item).join(".bdup.finished").exists())
-        .map(|e| e.to_owned())
-        .collect();
-    let mut to_copy: Vec<String> = get_directories(src)?
-        .iter()
-        .filter(|item| src.join(item).join("manifest.gz").exists())
-        .filter(|item| ! existing.contains(item))
-        .map(|e| e.to_owned())
-        .collect();
-
-    // sort in reverse order, so to_copy.pop() returns the oldest backup
-    to_copy.sort_unstable_by(|a, b| b.partial_cmp(a).unwrap());
-
-    let mut existing_backups = HashMap::new();
-    for name in existing {
-        let backup = Backup::from_path(&dest, &name)?;
-        existing_backups.insert(backup.id, backup);
-    }
-    while ! to_copy.is_empty() {
-        copy_backup(&src, &dest, &to_copy.pop().unwrap(), &mut existing_backups)?;
-    }
-
-    Ok(())
-}
-
 
 fn main() {
     let matches = clap::App::new("bdup")
@@ -172,11 +89,18 @@ fn main() {
         }
     }
 
+    if matches.subcommand_matches("duplicate").is_some() {
+        let dest_dir = matches.subcommand_matches("duplicate").unwrap().value_of("dest_dir").unwrap();
+        if ! PathBuf::from(dest_dir).exists() {
+            fs::create_dir(dest_dir).unwrap_or_else(|err| panic!("Could not create destination directory: {:?}", err));
+        }
+    }
+
     let mut current_backup = 0;
     let total_backups = backups.len();
-    if matches.subcommand_matches("verify").is_some() {
-        for mut backup in backups {
-            current_backup += 1;
+    for mut backup in backups {
+        current_backup += 1;
+        if matches.subcommand_matches("verify").is_some() {
             log::info!("Verifying backup {}/{}: {}", current_backup, total_backups, backup.display_name());
             match backup.verify() {
                 Ok(0) => log::info!("Backup verified successfully"),
@@ -184,34 +108,14 @@ fn main() {
                 Err(err) => log::error!("Unable to verify backup: {:?}", err),
             }
         }
-    }
-    else if let Some(matches) = matches.subcommand_matches("duplicate") {
-        duplicate(source_dir, matches.value_of("dest_dir").unwrap());
-    }
-}
+        else if let Some(matches) = matches.subcommand_matches("duplicate") {
+            let dest_dir = matches.value_of("dest_dir").unwrap();
+            log::info!("Duplicating backup {}/{} from {} to {}", current_backup, total_backups, backup.display_name(), dest_dir);
 
-fn duplicate(from: &str, to: &str) {
-    let base_dir = PathBuf::from(from);
-    let clients = get_directories(&base_dir).expect("Could not get client list");
-
-    let dest_dir = PathBuf::from(to);
-    if ! dest_dir.as_path().exists() {
-        log::info!("Creating destination directory {:?}", dest_dir);
-        fs::create_dir(dest_dir.as_path()).expect("Could not create destination directory");
-    }
-
-    let mut client_num = 0;
-    let clients_total = clients.len();
-    for name in clients {
-        client_num += 1;
-        log::info!("Duplicating client {}/{}: {}", client_num, clients_total, name);
-
-        if ! dest_dir.join(&name).as_path().exists() {
-            log::info!("Creating client destination directory: {:?}", dest_dir.join(&name));
-            fs::create_dir(dest_dir.join(&name).as_path())
-                .expect("Could not create destination directory");
+            let mut dest = Backup::new(&PathBuf::from(dest_dir).join(backup.client()), &backup.dirname());
+            dest.clone_from(&backup)
+                .unwrap_or_else(|err| panic!("Cloning of backup {} failed: {:?}", backup.display_name(), err));
         }
-        duplicate_backups(&base_dir.join(&name), &dest_dir.join(&name))
-            .unwrap_or_else(|_| panic!("Error while duplicating backups of {}", name));
     }
 }
+
