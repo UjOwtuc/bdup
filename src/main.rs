@@ -1,6 +1,7 @@
 use std::{env, str};
 use std::fs;
 use std::io;
+use std::sync::Arc;
 use std::path::{Path, PathBuf};
 use std::os::unix::ffi::OsStrExt;
 
@@ -60,6 +61,8 @@ fn main() {
                 .help("Destination directory")
                 .takes_value(true)
                 .required(true)))
+        .subcommand(clap::SubCommand::with_name("info")
+            .about("Show info about given backups"))
         .get_matches();
 
     let source_dir = matches.value_of("source").unwrap_or("/var/spool/burp");
@@ -74,6 +77,9 @@ fn main() {
         env::set_var("RUST_LOG", level);
     }
     pretty_env_logger::init();
+
+    log::debug!("source dir: {}", source_dir);
+    log::debug!("clients: {}", clients.join(", "));
 
     let mut backups = Vec::new();
     if let Some(path) = matches.value_of("single_backup") {
@@ -113,8 +119,23 @@ fn main() {
             log::info!("Duplicating backup {}/{} from {} to {}", current_backup, total_backups, backup.display_name(), dest_dir);
 
             let mut dest = Backup::new(&PathBuf::from(dest_dir).join(backup.client()), &backup.dirname());
-            dest.clone_from(&backup)
-                .unwrap_or_else(|err| panic!("Cloning of backup {} failed: {:?}", backup.display_name(), err));
+            let name = backup.display_name();
+            dest.clone_from(&Arc::new(backup))
+                .unwrap_or_else(|err| panic!("Cloning of backup {} failed: {:?}", name, err));
+        }
+        else if matches.subcommand_matches("info").is_some() {
+            println!("Display Name: {}", backup.display_name());
+            println!("Path: {}", backup.path().display());
+            println!("Base Dir: {}", backup.base_dir.display());
+            println!("Siblings:");
+            for sibling in backup.sibling_backups().unwrap_or_else(|err| panic!("Unable to get siblings: {}", err)) {
+                println!("\t{}", sibling.display_name());
+            }
+            println!("Clone base: {}", match backup.find_clone_base() {
+                Some(base) => base.display_name(),
+                None => "None".to_owned(),
+            });
+            println!();
         }
     }
 }

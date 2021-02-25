@@ -173,13 +173,23 @@ impl TryFrom<&[u8]> for Stat {
     }
 }
 
+pub struct ManifestEntryData {
+    pub path: PathBuf,
+    pub size: u64,
+    pub md5: String,
+}
+
+impl ManifestEntryData {
+    fn new() -> Self {
+        Self { path: PathBuf::new(), size: 0, md5: "".to_string() }
+    }
+}
+
 pub struct ManifestEntry {
     file_type: FileType,
     pub path: PathBuf,
     pub stat: Stat,
-    pub data_path: Option<PathBuf>,
-    size: Option<u64>,
-    pub md5: Option<String>,
+    pub data: Option<ManifestEntryData>,
     link_target: Option<PathBuf>,
 }
 
@@ -189,9 +199,7 @@ impl ManifestEntry {
             file_type: FileType::Unknown,
             path: PathBuf::new(),
             stat: Stat::default(),
-            data_path: None,
-            size: None,
-            md5: None,
+            data: None,
             link_target: None,
         }
     }
@@ -210,7 +218,12 @@ impl fmt::Display for ManifestEntry {
         let group = format!("{}", self.stat.group_id);
         let tstamp = NaiveDateTime::from_timestamp(self.stat.mod_time.try_into().unwrap(), 0);
 
-        let size = self.size.unwrap_or(0);
+        let size = if let Some(data) = &self.data {
+            data.size
+        }
+        else {
+            0
+        };
 
         write!(f, "{} {:10} {:10} {:8} {} {:?}", self.stat.mode, owner, group, size, tstamp, &self.path)?;
         if self.file_type == FileType::SoftLink {
@@ -238,7 +251,7 @@ fn add_manifest_line(entry: &mut ManifestEntry, kind: &char, data: &[u8]) -> Res
             entry.file_type = FileType::Plain;
             entry.path = PathBuf::from(OsStr::from_bytes(data));
         },
-        't' => entry.data_path = Some(PathBuf::from(OsStr::from_bytes(data))),
+        't' => entry.data.get_or_insert_with(ManifestEntryData::new).path = PathBuf::from(OsStr::from_bytes(data)),
         'L' => entry.file_type = FileType::HardLink,
         's' => {
             entry.file_type = FileType::Special;
@@ -263,8 +276,8 @@ fn add_manifest_line(entry: &mut ManifestEntry, kind: &char, data: &[u8]) -> Res
         'x' => {
             let info = str::from_utf8(data).unwrap();
             let val = info.split(':').collect::<Vec<&str>>();
-            entry.size = Some(val[0].parse::<u64>().unwrap());
-            entry.md5 = Some(val[1].to_owned());
+            entry.data.get_or_insert_with(ManifestEntryData::new).size = val[0].parse::<u64>().unwrap();
+            entry.data.get_or_insert_with(ManifestEntryData::new).md5 = val[1].to_owned();
             finished = true;
         },
         _ => log::debug!("Ignoring line starting with '{}'", *kind as char)
