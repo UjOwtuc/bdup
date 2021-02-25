@@ -200,8 +200,11 @@ impl Backup {
         }
 
         log::info!("Starting data transfers");
+        let mut files_in_manifest = HashSet::new();
         manifest::read_manifest(&mut self.manifest_reader()?, &mut |entry: &ManifestEntry| {
             if let Some(data) = &entry.data {
+                files_in_manifest.insert(data.path.to_owned());
+
                 files_total += 1;
                 let data_path = data.path.to_owned();
                 let mut copied = false;
@@ -215,12 +218,13 @@ impl Backup {
                 }
                 if ! copied {
                     let dest_path = self.path().join("data").join(&data_path);
+                    let file_size = data.size;
                     let tx = tx.clone();
                     let src_clone = src.clone();
                     worker_pool.execute(move || {
                         match src_clone.fetch_file(Some("data"), &data_path.as_os_str(), &dest_path) {
                             Ok(_) => {
-                                tx.send(Ok((data_path, 0))).unwrap();  // TODO send file size
+                                tx.send(Ok((data_path, file_size))).unwrap();
                             },
                             Err(error) => {
                                 log::error!("Could not fetch file {:?}: {:?}", data_path, error);
@@ -244,7 +248,25 @@ impl Backup {
             }
         }
 
-        let errors = files_total - files_ok;
+        if base.is_some() {
+            log::info!("Remving superfluous files (cloned from base, not in this backup)");
+            let data_path = self.path().join("data");
+            visit_dirs(&data_path, &|entry: &fs::DirEntry| -> Result<(), Box<dyn Error>> {
+                let path = entry.path().strip_prefix(&data_path)?.to_owned();
+                if ! files_in_manifest.contains(&path) {
+                    fs::remove_file(entry.path())?;
+                    if let Some(parent) = entry.path().parent() {
+                        if parent.read_dir()?.next().is_none() {
+                            fs::remove_dir(parent)?;
+                        }
+                    }
+                }
+                Ok(())
+            })?;
+        }
+
+
+        let errors = files_total - files_ok - files_from_base;
         if errors == 0 {
             log::info!("Cloning finished successfully: {} files total, {} from base backup, {} bytes transferred", files_total, files_from_base, transfer_size);
             fs::remove_file(self.path().join(".bdup.partial"))?;
@@ -321,6 +343,7 @@ impl Backup {
                 let file_path = data_path.join(&data.path);
                 let tx = tx.clone();
                 worker_pool.execute(move || {
+                    // TODO: check file size
                     let result = match verify_file_md5(&file_path, &checksum) {
                         Ok((true, _)) => VerifyResult::Ok,
                         Ok((false, md5)) => VerifyResult::ChecksumMismatch(md5),
