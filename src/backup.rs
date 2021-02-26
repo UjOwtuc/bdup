@@ -37,12 +37,14 @@ pub fn find_backups(path: &Path) -> Result<Vec<Backup>, Box<dyn Error>>
 
 enum VerifyResult {
     Ok,
+    FilesizeMismatch(usize),
     ChecksumMismatch(String),
     Error(String),
 }
 
 struct VerifyFileResult {
     path: PathBuf,
+    size: usize,
     md5: String,
     result: VerifyResult
 }
@@ -339,17 +341,24 @@ impl Backup {
                 files_total += 1;
                 files_in_manifest.insert(data.path.to_owned());
 
+                let size = data.size;
                 let checksum = data.md5.to_owned();
                 let file_path = data_path.join(&data.path);
                 let tx = tx.clone();
                 worker_pool.execute(move || {
-                    // TODO: check file size
-                    let result = match verify_file_md5(&file_path, &checksum) {
-                        Ok((true, _)) => VerifyResult::Ok,
-                        Ok((false, md5)) => VerifyResult::ChecksumMismatch(md5),
+                    let result = match verify_file_md5(&file_path, size, &checksum) {
+                        Ok((true, _, _)) => VerifyResult::Ok,
+                        Ok((false, read_size, md5)) =>  {
+                            if read_size != size {
+                                VerifyResult::FilesizeMismatch(read_size)
+                            }
+                            else {
+                                VerifyResult::ChecksumMismatch(md5)
+                            }
+                        },
                         Err(err) => VerifyResult::Error(format!("Error computing checksum: {:?}", err))
                     };
-                    tx.send(VerifyFileResult{ path: file_path, md5: checksum, result }).unwrap();
+                    tx.send(VerifyFileResult{ path: file_path, size, md5: checksum, result }).unwrap();
                 });
             }
             Ok(())
@@ -360,6 +369,9 @@ impl Backup {
         for result in rx.iter() {
             match result.result {
                 VerifyResult::Ok => files_ok += 1,
+                VerifyResult::FilesizeMismatch(size) => {
+                    log::error!("File does not have correct size {:?}. Expected: {}, real: {}", result.path, result.size, size);
+                },
                 VerifyResult::ChecksumMismatch(computed) => {
                     log::error!("File's checksum did not match {:?}. Expected: {}, computed: {}", result.path, result.md5, computed);
                 },
@@ -400,11 +412,12 @@ impl PartialEq for Backup {
     }
 }
 
-fn verify_file_md5(file: &Path, md5: &str) -> io::Result<(bool, String)> {
+fn verify_file_md5(file: &Path, size: usize, md5: &str) -> io::Result<(bool, usize, String)> {
     let input = fs::File::open(file)?;
-    let digest = format!("{:x}", calc_md5(&mut GzDecoder::new(input))?);
+    let (read_size, digest) = calc_md5(&mut GzDecoder::new(input))?;
+    let digest = format!("{:x}", digest);
 
-    Ok((md5 == digest, digest))
+    Ok((read_size == size && md5 == digest, size, digest))
 }
 
 fn visit_dirs(dir: &Path, cb: &dyn Fn(&fs::DirEntry) -> Result<(), Box<dyn Error>>) -> Result<(), Box<dyn Error>> {
@@ -422,16 +435,18 @@ fn visit_dirs(dir: &Path, cb: &dyn Fn(&fs::DirEntry) -> Result<(), Box<dyn Error
     Ok(())
 }
 
-fn calc_md5<T: io::Read>(reader: &mut T) -> io::Result<md5::Digest> {
+pub fn calc_md5<T: io::Read>(reader: &mut T) -> io::Result<(usize, md5::Digest)> {
     let mut ctx = md5::Context::new();
     let mut buf = vec![0_u8; 4096];
+    let mut size = 0;
     loop {
         let len = reader.read(&mut buf)?;
         ctx.consume(&buf[0..len]);
+        size += len;
         if len == 0 {
             break;
         }
     }
-    Ok(ctx.compute())
+    Ok((size, ctx.compute()))
 }
 

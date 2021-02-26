@@ -175,7 +175,7 @@ impl TryFrom<&[u8]> for Stat {
 
 pub struct ManifestEntryData {
     pub path: PathBuf,
-    pub size: u64,
+    pub size: usize,
     pub md5: String,
 }
 
@@ -276,7 +276,7 @@ fn add_manifest_line(entry: &mut ManifestEntry, kind: &char, data: &[u8]) -> Res
         'x' => {
             let info = str::from_utf8(data).unwrap();
             let val = info.split(':').collect::<Vec<&str>>();
-            entry.data.get_or_insert_with(ManifestEntryData::new).size = val[0].parse::<u64>().unwrap();
+            entry.data.get_or_insert_with(ManifestEntryData::new).size = val[0].parse::<usize>().unwrap();
             entry.data.get_or_insert_with(ManifestEntryData::new).md5 = val[1].to_owned();
             finished = true;
         },
