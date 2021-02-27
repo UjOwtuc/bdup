@@ -450,3 +450,13 @@ pub fn calc_md5<T: io::Read>(reader: &mut T) -> io::Result<(usize, md5::Digest)>
     Ok((size, ctx.compute()))
 }
 
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn parse_name() {
+        assert_eq!(Backup::parse_name("0000015 2019-04-13 18:02:26").unwrap(), (15, "2019-04-13 18:02:26".to_string()));
+    }
+}
+
