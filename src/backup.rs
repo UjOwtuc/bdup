@@ -256,8 +256,9 @@ impl Backup {
             visit_dirs(&data_path, &|entry: &fs::DirEntry| -> Result<(), Box<dyn Error>> {
                 let path = entry.path().strip_prefix(&data_path)?.to_owned();
                 if ! files_in_manifest.contains(&path) {
-                    fs::remove_file(entry.path())?;
-                    if let Some(parent) = entry.path().parent() {
+                    fs::remove_file(data_path.join(entry.path()))?;
+
+                    for parent in entry.path().parent().unwrap().ancestors() {
                         if parent.read_dir()?.next().is_none() {
                             fs::remove_dir(parent)?;
                         }
@@ -266,7 +267,6 @@ impl Backup {
                 Ok(())
             })?;
         }
-
 
         let errors = files_total - files_ok - files_from_base;
         if errors == 0 {
