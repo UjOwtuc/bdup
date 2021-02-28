@@ -224,15 +224,14 @@ impl Backup {
                     let tx = tx.clone();
                     let src_clone = src.clone();
                     worker_pool.execute(move || {
-                        match src_clone.fetch_file(Some("data"), &data_path.as_os_str(), &dest_path) {
+                        tx.send(match src_clone.fetch_file(Some("data"), &data_path.as_os_str(), &dest_path) {
                             Ok(_) => {
-                                tx.send(Ok((data_path, file_size))).unwrap();
+                                Ok((data_path, file_size))
                             },
                             Err(error) => {
-                                log::error!("Could not fetch file {:?}: {:?}", data_path, error);
-                                tx.send(Err((data_path, format!("{}", error)))).unwrap();
+                                Err((data_path, format!("{}", error)))
                             }
-                        };
+                        }).unwrap();
                     });
                 }
             }
@@ -244,9 +243,12 @@ impl Backup {
         let mut files_ok = 0;
         let mut transfer_size = 0;
         for result in rx.iter() {
-            if let Ok((_, size)) = result {
-                files_ok += 1;
-                transfer_size += size;
+            match result {
+                Ok((_, size)) => {
+                    files_ok += 1;
+                    transfer_size += size;
+                },
+                Err((path, error)) => log::error!("Could not fetch file {:?}: {:?}", path, error),
             }
         }
 
@@ -453,10 +455,19 @@ pub fn calc_md5<T: io::Read>(reader: &mut T) -> io::Result<(usize, md5::Digest)>
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn parse_name() {
         assert_eq!(Backup::parse_name("0000015 2019-04-13 18:02:26").unwrap(), (15, "2019-04-13 18:02:26".to_string()));
+    }
+
+    #[test]
+    fn calc_md5_lorem() {
+        let lorem = "Lorem ipsum dolor sit amet, consectetur adipisici elit, sed eiusmod tempor incidunt ut labore et dolore magna aliqua";
+        let (size, digest) = calc_md5(&mut Cursor::new(lorem)).unwrap();
+        assert_eq!(size, lorem.len());
+        assert_eq!(format!("{:x}", digest), "112e6e5d321385d524234210bdebec02")
     }
 }
 
