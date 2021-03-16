@@ -253,7 +253,7 @@ impl Backup {
         }
 
         if base.is_some() {
-            log::info!("Remving superfluous files (cloned from base, not in this backup)");
+            log::info!("Removing superfluous files (cloned from base, not in this backup)");
             let data_path = self.path().join("data");
             visit_dirs(&data_path, &|entry: &fs::DirEntry| -> Result<(), Box<dyn Error>> {
                 let path = entry.path().strip_prefix(&data_path)?.to_owned();
