@@ -3,14 +3,21 @@ name = "bdup"
 version = "0.1.0"
 authors = ["Karsten Borgwaldt <kb@spambri.de>"]
 edition = "2018"
-
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[lib]
+name = "burp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "bdup"
+path = "src/bin/bdup.rs"
 
 [dependencies]
 flate2 = "1.0"
 chrono = "0.4"
 log = "0.4"
-pretty_env_logger = "0.4"
+fern = "0.6"
 md5 = "0.7"
 threadpool = "1.8"
 
