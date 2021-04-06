@@ -12,7 +12,6 @@ use flate2::read::GzDecoder;
 use threadpool::ThreadPool;
 
 use crate::manifest;
-use crate::manifest::ManifestEntry;
 
 fn visit_dirs(dir: &Path, cb: &dyn Fn(&fs::DirEntry) -> Result<(), Box<dyn Error>>) -> Result<(), Box<dyn Error>> {
     if dir.is_dir() {
@@ -29,7 +28,7 @@ fn visit_dirs(dir: &Path, cb: &dyn Fn(&fs::DirEntry) -> Result<(), Box<dyn Error
     Ok(())
 }
 
-pub trait BurpBackup {
+pub trait Backup {
     fn id(&self) -> u64;
     fn dir_name(&self) -> String;
     fn local_path(&self) -> &Path;
@@ -54,14 +53,14 @@ pub trait BurpBackup {
     fn get_checksums(&self) -> &HashMap<PathBuf, String>;
 }
 
-pub struct LocalBurpBackup {
+pub struct LocalBackup {
     path: PathBuf,
     id: u64,
     timestamp: String,
     checksums: HashMap<PathBuf, String>,
 }
 
-impl LocalBurpBackup {
+impl LocalBackup {
     pub fn new(path: &Path) -> Self {
         let dir = path.file_name().expect("Invalid path for local backup: no file_name component").to_string_lossy();
         let id = dir[0..7].parse::<u64>().unwrap_or_else(|err| panic!("Invalid path for local backup: could not parse id from directory name: {:?}", err));
@@ -90,7 +89,7 @@ impl LocalBurpBackup {
         Ok(real_path)
     }
 
-    fn create_volume(&self, base_backup: &Option<&Arc<dyn BurpBackup + Send + Sync>>) -> Result<(), Box<dyn Error>> {
+    fn create_volume(&self, base_backup: &Option<&Arc<dyn Backup + Send + Sync>>) -> Result<(), Box<dyn Error>> {
         if let Some(parent_dir) = self.path.parent() {
             if ! parent_dir.exists() {
                 fs::create_dir(parent_dir)?;
@@ -129,7 +128,7 @@ impl LocalBurpBackup {
         Ok(())
     }
 
-    pub fn clone_from(&mut self, base_backup: &Option<&Arc<dyn BurpBackup + Send + Sync>>, src: &Arc<dyn BurpBackup + Send + Sync>) -> Result<(), Box<dyn Error>> {
+    pub fn clone_from(&mut self, base_backup: &Option<&Arc<dyn Backup + Send + Sync>>, src: &Arc<dyn Backup + Send + Sync>) -> Result<(), Box<dyn Error>> {
         if self.is_finished() {
             log::info!("Cloning to {:?} already finished. Skipping", self.path);
             return Ok(());
@@ -158,7 +157,7 @@ impl LocalBurpBackup {
 
         log::info!("Starting data transfers");
         let mut files_in_manifest = HashSet::new();
-        manifest::read_manifest(&mut self.manifest_reader()?, &mut |entry: &ManifestEntry| {
+        manifest::read_manifest(&mut self.manifest_reader()?, &mut |entry: &manifest::ManifestEntry| {
             if let Some(data) = &entry.data {
                 files_in_manifest.insert(data.path.to_owned());
 
@@ -246,7 +245,7 @@ impl LocalBurpBackup {
     }
 }
 
-impl BurpBackup for LocalBurpBackup {
+impl Backup for LocalBackup {
     fn id(&self) -> u64 {
         self.id
     }
@@ -275,7 +274,7 @@ impl BurpBackup for LocalBurpBackup {
             log::info!("Loading checksums from backup {:?}", self.path);
             let mut reader = self.manifest_reader()?;
 
-            manifest::read_manifest(&mut reader, &mut |entry: &ManifestEntry| {
+            manifest::read_manifest(&mut reader, &mut |entry: &manifest::ManifestEntry| {
                 if let Some(data) = &entry.data {
                     self.checksums.insert(data.path.to_owned(), data.md5.to_owned());
                 }
@@ -302,28 +301,28 @@ impl BurpBackup for LocalBurpBackup {
     }
 }
 
-impl Eq for dyn BurpBackup + Send + Sync {}
+impl Eq for dyn Backup + Send + Sync {}
 
-impl Ord for dyn BurpBackup + Send + Sync {
+impl Ord for dyn Backup + Send + Sync {
     fn cmp(&self, other: &Self) -> Ordering {
         self.id().cmp(&other.id())
     }
 }
 
-impl PartialOrd for dyn BurpBackup + Send + Sync {
+impl PartialOrd for dyn Backup + Send + Sync {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl PartialEq for dyn BurpBackup + Send + Sync {
+impl PartialEq for dyn Backup + Send + Sync {
     fn eq(&self, other: &Self) -> bool {
         self.id() == other.id()
     }
 }
 
 /*
-pub struct RemoteBurpBackup {
+pub struct RemoteBackup {
     url: String,
     id: u64,
     timestamp: String,

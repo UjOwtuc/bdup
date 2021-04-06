@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use fern;
 
-use burp::client::BurpClient;
+use burp::client::Client;
 
 fn get_directories(base_dir: &Path) -> io::Result<Vec<String>> {
     let mut dirs = Vec::new();
@@ -79,7 +79,7 @@ fn main() {
     let mut clients = Vec::new();
     for name in client_names {
         log::debug!("Loading list of existing backups for client {}", name);
-        let mut client = BurpClient::new(&name);
+        let mut client = Client::new(&name);
         client.find_local_backups(&PathBuf::from(source_dir).join(&name)).unwrap_or_else(|err| log::error!("Could not find backups for client {}: {:?}", &name, err));
         clients.push(client);
     }
@@ -88,7 +88,7 @@ fn main() {
     clone_backups(&clients, &PathBuf::from(dest_dir));
 }
 
-fn clone_backups(clients: &[BurpClient], dest: &Path) {
+fn clone_backups(clients: &[Client], dest: &Path) {
     if ! dest.exists() {
         fs::create_dir(dest).unwrap_or_else(|err| panic!("Could not create destination directory: {:?}", err));
     }

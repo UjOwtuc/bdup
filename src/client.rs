@@ -4,16 +4,16 @@ use std::fs;
 use std::error::Error;
 use std::sync::Arc;
 
-use crate::backup::BurpBackup;
-use crate::backup::LocalBurpBackup;
+use crate::backup::Backup;
+use crate::backup::LocalBackup;
 
 
-pub struct BurpClient {
+pub struct Client {
     pub name: String,
-    backups: Vec<Arc<dyn BurpBackup + Sync + Send>>,
+    backups: Vec<Arc<dyn Backup + Sync + Send>>,
 }
 
-impl BurpClient {
+impl Client {
     pub fn new(name: &str) -> Self {
         Self {
             name: name.to_owned(),
@@ -26,7 +26,7 @@ impl BurpClient {
             let entry = dir_entry?;
             let file_type = entry.file_type()?;
             if file_type.is_dir() {
-                self.backups.push(Arc::new(LocalBurpBackup::new(&entry.path())));
+                self.backups.push(Arc::new(LocalBackup::new(&entry.path())));
             }
         }
         self.backups.sort_unstable_by(|a, b| {a.id().partial_cmp(&b.id()).unwrap()});
@@ -41,11 +41,10 @@ impl BurpClient {
 
     pub fn clone_backups_to(&self, dest: &Path) -> Result<(), Box<dyn Error>> {
         if ! dest.exists() {
-            // TODO: create a subvolume for each client?
             fs::create_dir(dest)?;
         }
 
-        let mut cloned = BurpClient::new(&format!("cloned_{}", &self.name));
+        let mut cloned = Client::new(&format!("cloned_{}", &self.name));
         cloned.find_local_backups(dest)?;
 
         for source in &self.backups {
@@ -55,22 +54,27 @@ impl BurpClient {
         Ok(())
     }
 
-    fn clone_backup(&self, source: &Arc<dyn BurpBackup + Sync + Send>, dest: &Path, cloned: &mut BurpClient) -> Result<(), Box<dyn Error>> {
-        let mut dest_backup = LocalBurpBackup::new(&dest.join(source.dir_name()));
+    fn find_base_for(&self, id: u64) -> Option<&Arc<dyn Backup + Send + Sync>> {
+        self.backups.iter()
+            .filter(|backup| backup.id() < id)
+            .filter(|backup| backup.is_local())
+            .max()
+    }
+
+    fn clone_backup(&self, source: &Arc<dyn Backup + Sync + Send>, dest: &Path, cloned: &mut Client) -> Result<(), Box<dyn Error>> {
+        let mut dest_backup = LocalBackup::new(&dest.join(source.dir_name()));
 
         if dest_backup.is_finished() {
             log::info!("Backup {}/{} is already finished.", &self.name, source.dir_name());
             return Ok(())
         }
 
-        let base_backup = cloned.backups.iter()
-            .filter(|backup| backup.id() < source.id())
-            .filter(|backup| backup.is_local())
-            .max();
-        log::info!("Cloning backup {}/{} with base {}", &self.name, source.dir_name(), match base_backup {
-            Some(base) => base.dir_name(),
-            None => "None".to_string()
-        });
+        let base_backup = cloned.find_base_for(source.id());
+        let base_name = match base_backup {
+            Some(backup) => Some(backup.dir_name()),
+            None => None
+        };
+        log::info!("Cloning backup {}/{} with base {:?}", &self.name, source.dir_name(), base_name);
         dest_backup.clone_from(&base_backup, source)?;
         cloned.backups.push(Arc::new(dest_backup));
         Ok(())
