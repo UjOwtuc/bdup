@@ -24,10 +24,10 @@ impl Client {
     pub fn find_local_backups(&mut self, base_dir: &Path) -> io::Result<()> {
         for dir_entry in fs::read_dir(base_dir)? {
             let entry = dir_entry?;
-            let file_type = entry.file_type()?;
-            if file_type.is_dir() {
-                self.backups.push(Arc::new(LocalBackup::new(&entry.path())));
-            }
+            match LocalBackup::new(&entry.path()) {
+                Ok(backup) => self.backups.push(Arc::new(backup)),
+                Err(error) => log::info!("Skipping path {:?} because it is not a backup: {:?}", &entry.path(), error)
+            };
         }
         self.backups.sort_unstable_by(|a, b| {a.id().partial_cmp(&b.id()).unwrap()});
         Ok(())
@@ -62,7 +62,7 @@ impl Client {
     }
 
     fn clone_backup(&self, source: &Arc<dyn Backup>, dest: &Path, cloned: &mut Client) -> Result<(), Box<dyn Error>> {
-        let mut dest_backup = LocalBackup::new(&dest.join(source.dir_name()));
+        let mut dest_backup = LocalBackup::new(&dest.join(source.dir_name()))?;
 
         if dest_backup.is_finished() {
             log::info!("Backup {}/{} is already finished.", &self.name, source.dir_name());

@@ -61,16 +61,16 @@ pub struct LocalBackup {
 }
 
 impl LocalBackup {
-    pub fn new(path: &Path) -> Self {
+    pub fn new(path: &Path) -> Result<Self, Box<dyn Error>> {
         let dir = path.file_name().expect("Invalid path for local backup: no file_name component").to_string_lossy();
-        let id = dir[0..7].parse::<u64>().unwrap_or_else(|err| panic!("Invalid path for local backup: could not parse id from directory name: {:?}", err));
+        let id = dir[0..7].parse::<u64>()?;
         let timestamp = dir[8..].to_owned();
-        Self {
+        Ok(Self {
             path: path.to_owned(),
             id,
             timestamp,
             checksums: HashMap::new(),
-        }
+        })
     }
 
     /*
