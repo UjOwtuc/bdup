@@ -10,7 +10,7 @@ use crate::backup::LocalBackup;
 
 pub struct Client {
     pub name: String,
-    backups: Vec<Arc<dyn Backup + Sync + Send>>,
+    backups: Vec<Arc<dyn Backup>>,
 }
 
 impl Client {
@@ -54,14 +54,14 @@ impl Client {
         Ok(())
     }
 
-    fn find_base_for(&self, id: u64) -> Option<&Arc<dyn Backup + Send + Sync>> {
+    fn find_base_for(&self, id: u64) -> Option<&Arc<dyn Backup>> {
         self.backups.iter()
             .filter(|backup| backup.id() < id)
             .filter(|backup| backup.is_local())
             .max()
     }
 
-    fn clone_backup(&self, source: &Arc<dyn Backup + Sync + Send>, dest: &Path, cloned: &mut Client) -> Result<(), Box<dyn Error>> {
+    fn clone_backup(&self, source: &Arc<dyn Backup>, dest: &Path, cloned: &mut Client) -> Result<(), Box<dyn Error>> {
         let mut dest_backup = LocalBackup::new(&dest.join(source.dir_name()));
 
         if dest_backup.is_finished() {

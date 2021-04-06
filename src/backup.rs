@@ -28,7 +28,7 @@ fn visit_dirs(dir: &Path, cb: &dyn Fn(&fs::DirEntry) -> Result<(), Box<dyn Error
     Ok(())
 }
 
-pub trait Backup {
+pub trait Backup : Sync + Send {
     fn id(&self) -> u64;
     fn dir_name(&self) -> String;
     fn local_path(&self) -> &Path;
@@ -89,7 +89,7 @@ impl LocalBackup {
         Ok(real_path)
     }
 
-    fn create_volume(&self, base_backup: &Option<&Arc<dyn Backup + Send + Sync>>) -> Result<(), Box<dyn Error>> {
+    fn create_volume(&self, base_backup: &Option<&Arc<dyn Backup>>) -> Result<(), Box<dyn Error>> {
         if let Some(parent_dir) = self.path.parent() {
             if ! parent_dir.exists() {
                 fs::create_dir(parent_dir)?;
@@ -128,7 +128,7 @@ impl LocalBackup {
         Ok(())
     }
 
-    pub fn clone_from(&mut self, base_backup: &Option<&Arc<dyn Backup + Send + Sync>>, src: &Arc<dyn Backup + Send + Sync>) -> Result<(), Box<dyn Error>> {
+    pub fn clone_from(&mut self, base_backup: &Option<&Arc<dyn Backup>>, src: &Arc<dyn Backup>) -> Result<(), Box<dyn Error>> {
         if self.is_finished() {
             log::info!("Cloning to {:?} already finished. Skipping", self.path);
             return Ok(());
@@ -301,21 +301,21 @@ impl Backup for LocalBackup {
     }
 }
 
-impl Eq for dyn Backup + Send + Sync {}
+impl Eq for dyn Backup {}
 
-impl Ord for dyn Backup + Send + Sync {
+impl Ord for dyn Backup {
     fn cmp(&self, other: &Self) -> Ordering {
         self.id().cmp(&other.id())
     }
 }
 
-impl PartialOrd for dyn Backup + Send + Sync {
+impl PartialOrd for dyn Backup {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl PartialEq for dyn Backup + Send + Sync {
+impl PartialEq for dyn Backup {
     fn eq(&self, other: &Self) -> bool {
         self.id() == other.id()
     }
