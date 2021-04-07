@@ -64,11 +64,19 @@ impl Backup {
         })
     }
 
-    /*
-    pub fn delete(&mut self) -> io::Result<()> {
-        unimplemented!();
+    pub fn delete(&mut self) -> Result<(), Box<dyn Error>> {
+        log::debug!("Removing backup at {}", self.path.display());
+        let status = Command::new("btrfs")
+            .arg("subvolume")
+            .arg("delete")
+            .arg(self.path.to_owned())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .status()?;
+        assert!(status.success());
+        drop(&self.checksums);
+        Ok(())
     }
-    */
 
     #[inline]
     fn metadata_files() -> &'static [&'static str] where Self: Sized {

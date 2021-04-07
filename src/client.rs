@@ -33,12 +33,6 @@ impl Client {
         Ok(())
     }
 
-    /*
-    pub fn find_remote_backups(&mut self, base_url: &str) -> Result<(), Box<dyn Error>> {
-        unimplemented!()
-    }
-    */
-
     pub fn clone_backups_to(&self, dest: &Path, transfer_threads: &ThreadPool) -> Result<(), Box<dyn Error>> {
         if ! dest.exists() {
             fs::create_dir(dest)?;
@@ -49,6 +43,13 @@ impl Client {
 
         for source in &self.backups {
             self.clone_backup(source, dest, &mut cloned, transfer_threads)?;
+        }
+
+        for backup in cloned.backups.iter_mut().filter(|backup| ! self.backups.contains(backup)) {
+            match backup.delete() {
+                Ok(_) => log::debug!("Removed old backup {}", backup.path.display()),
+                Err(error) => log::error!("Could not remove old backup {}: {:?}", backup.path.display(), error),
+            }
         }
 
         Ok(())
