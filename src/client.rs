@@ -72,16 +72,16 @@ impl Client {
         let mut dest_backup = Backup::new(&dest.join(&source.dir_name()))?;
 
         if dest_backup.is_finished() {
-            log::info!("Backup {:?} is already finished.", dest_backup.path);
+            log::debug!("Backup {} is already finished.", dest_backup.path.display());
             return Ok(())
         }
 
         let base_backup = cloned.find_base_for(source.id);
-        let base_name = match base_backup {
-            Some(backup) => Some(&backup.path),
-            None => None
+        let base_msg = match base_backup {
+            Some(backup) => format!("with base {}", backup.path.display()),
+            None => "without base".to_string()
         };
-        log::info!("Cloning backup {}/{:?} with base {:?}", &self.name, source.dir_name(), base_name);
+        log::info!("Cloning backup {}/{} {}", &self.name, source.dir_name(), base_msg);
         dest_backup.clone_from(&base_backup, &|source_path, dest_path, tx| {
             let from = source.path.join(source_path).to_owned();
             let to = dest_path.to_owned();

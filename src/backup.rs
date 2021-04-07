@@ -88,13 +88,14 @@ impl Backup {
         }
 
         if let Some(base_backup) = base_backup {
-            log::info!("Cloning previous backup {:?}", base_backup.path);
+            log::debug!("Cloning previous backup {:?}", base_backup.path);
             let status = Command::new("btrfs")
                 .arg("subvolume")
                 .arg("snapshot")
                 .arg(base_backup.path.to_owned())
                 .arg(self.path.to_owned())
                 .stdin(Stdio::null())
+                .stdout(Stdio::null())
                 .status()?;
             assert!(status.success());
 
@@ -111,6 +112,7 @@ impl Backup {
                 .arg("create")
                 .arg(self.path.to_owned())
                 .stdin(Stdio::null())
+                .stdout(Stdio::null())
                 .status()?;
             assert!(status.success());
             fs::create_dir(self.path.join("data"))?;
@@ -156,7 +158,7 @@ impl Backup {
         let mut files_total = 0;
         let mut files_from_base = 0;
 
-        log::info!("Fetching metadata");
+        log::debug!("Fetching metadata");
         for filename in Self::metadata_files() {
             files_total += 1;
             let dest_path = self.path.join(filename);
@@ -164,7 +166,7 @@ impl Backup {
         }
         let (mut files_ok, mut transfer_size) = self.wait_for_transfer(&rx, Some(self.path.join("manifest.gz").as_os_str()))?;
 
-        log::info!("Starting data transfers");
+        log::debug!("Starting data transfers");
         let mut files_in_manifest = HashSet::new();
         manifest::read_manifest(&mut self.manifest_reader()?, &mut |entry: &manifest::ManifestEntry| {
             if let Some(data) = &entry.data {
@@ -191,13 +193,13 @@ impl Backup {
         })?;
         drop(tx);
 
-        log::info!("Waiting for queued transfers to finish");
+        log::debug!("Waiting for queued transfers to finish");
         let (num, size) = self.wait_for_transfer(&rx, None)?;
         files_ok += num;
         transfer_size += size;
 
         if base_backup.is_some() {
-            log::info!("Removing superfluous files (cloned from base, not in this backup)");
+            log::debug!("Removing superfluous files (cloned from base, not in this backup)");
             let data_path = self.path.join("data");
             visit_dirs(&data_path, &|entry: &fs::DirEntry| -> Result<(), Box<dyn Error>> {
                 let path = entry.path().strip_prefix(&data_path)?.to_owned();
