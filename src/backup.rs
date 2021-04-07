@@ -299,3 +299,18 @@ impl PartialEq for Backup {
     }
 }
 
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn test_format_bytes() {
+        assert_eq!(format_bytes(1), "1.00 B");
+        assert_eq!(format_bytes(234), "234.00 B");
+        assert_eq!(format_bytes(1024), "1.00 kiB");
+        assert_eq!(format_bytes(456 * 1024), "456.00 kiB");
+        assert_eq!(format_bytes((2.5 * 1024.0) as u64), "2.50 kiB");
+        assert_eq!(format_bytes((99.0001 * 1024.0 * 1024.0) as u64), "99.00 MiB");
+    }
+}
+
