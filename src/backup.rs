@@ -168,6 +168,7 @@ impl Backup {
         let mut files_in_manifest = HashSet::new();
         manifest::read_manifest(&mut self.manifest_reader()?, &mut |entry: &manifest::ManifestEntry| {
             if let Some(data) = &entry.data {
+                self.checksums.insert(data.path.to_owned(), data.md5.to_owned());
                 files_in_manifest.insert(data.path.to_owned());
 
                 files_total += 1;
