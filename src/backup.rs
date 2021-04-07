@@ -134,7 +134,9 @@ impl LocalBackup {
             return Ok(());
         }
 
-        // TODO: make sure, base_backup has loaded checksums
+        if let Some(backup) = base_backup {
+            assert!(! backup.get_checksums().is_empty());
+        }
         self.create_volume(base_backup)?;
 
         let worker_pool = ThreadPool::new(2);
