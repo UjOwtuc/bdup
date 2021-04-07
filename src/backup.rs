@@ -2,14 +2,12 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::io;
 use std::fs;
-use std::sync::Arc;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{channel, Sender, Receiver};
 use std::ffi::{OsStr, OsString};
 use std::error::Error;
 use std::process::{Command, Stdio};
 use std::cmp::Ordering;
 use flate2::read::GzDecoder;
-use threadpool::ThreadPool;
 
 use crate::manifest;
 
@@ -28,39 +26,21 @@ fn visit_dirs(dir: &Path, cb: &dyn Fn(&fs::DirEntry) -> Result<(), Box<dyn Error
     Ok(())
 }
 
-pub trait Backup : Sync + Send {
-    fn id(&self) -> u64;
-    fn dir_name(&self) -> String;
-    fn local_path(&self) -> &Path;
-    fn fetch_temporary(&self, prefix: Option<&str>, path: &OsStr) -> io::Result<PathBuf>;
-    fn fetch_file(&self, prefix: Option<&str>, path: &OsStr, dest: &Path) -> io::Result<u64>;
-    fn load_checksums(&mut self) -> Result<(), Box<dyn Error>>;
-    fn forget_checksums(&mut self);
-
-    #[inline]
-    fn metadata_files() -> &'static [&'static str] where Self: Sized {
-        &["manifest.gz", "log.gz", "backup_stats", "timestamp", "incexc"]
-    }
-
-    fn manifest_reader(&self) -> Result<io::BufReader<flate2::read::GzDecoder<fs::File>>, Box<dyn Error>> {
-        let manifest = fs::File::open(self.fetch_temporary(None, &OsString::from("manifest.gz"))?)?;
-        let gz = GzDecoder::new(manifest);
-        Ok(io::BufReader::new(gz))
-    }
-
-    fn is_finished(&self) -> bool;
-    fn is_local(&self) -> bool;
-    fn get_checksums(&self) -> &HashMap<PathBuf, String>;
+pub struct TransferResult {
+    pub source: OsString,
+    pub dest: OsString,
+    pub size: u64,
+    pub error: Option<String>,
 }
 
-pub struct LocalBackup {
-    path: PathBuf,
-    id: u64,
+pub struct Backup {
+    pub path: PathBuf,
+    pub id: u64,
     timestamp: String,
     checksums: HashMap<PathBuf, String>,
 }
 
-impl LocalBackup {
+impl Backup {
     pub fn new(path: &Path) -> Result<Self, Box<dyn Error>> {
         let dir = path.file_name().expect("Invalid path for local backup: no file_name component").to_string_lossy();
         let id = dir[0..7].parse::<u64>()?;
@@ -79,6 +59,17 @@ impl LocalBackup {
     }
     */
 
+    #[inline]
+    fn metadata_files() -> &'static [&'static str] where Self: Sized {
+        &["manifest.gz", "log.gz", "backup_stats", "timestamp", "incexc"]
+    }
+
+    fn manifest_reader(&self) -> Result<io::BufReader<flate2::read::GzDecoder<fs::File>>, Box<dyn Error>> {
+        let manifest = fs::File::open(self.fetch_temporary(None, &OsString::from("manifest.gz"))?)?;
+        let gz = GzDecoder::new(manifest);
+        Ok(io::BufReader::new(gz))
+    }
+
     fn file_path(&self, prefix: Option<&str>, path: &OsStr) -> io::Result<PathBuf> {
         let mut real_path = PathBuf::from(&self.path);
         if let Some(prefix) = prefix {
@@ -89,7 +80,7 @@ impl LocalBackup {
         Ok(real_path)
     }
 
-    fn create_volume(&self, base_backup: &Option<&Arc<dyn Backup>>) -> Result<(), Box<dyn Error>> {
+    fn create_volume(&self, base_backup: &Option<&Backup>) -> Result<(), Box<dyn Error>> {
         if let Some(parent_dir) = self.path.parent() {
             if ! parent_dir.exists() {
                 fs::create_dir(parent_dir)?;
@@ -97,11 +88,11 @@ impl LocalBackup {
         }
 
         if let Some(base_backup) = base_backup {
-            log::info!("Cloning previous backup {:?}", base_backup.local_path());
+            log::info!("Cloning previous backup {:?}", base_backup.path);
             let status = Command::new("btrfs")
                 .arg("subvolume")
                 .arg("snapshot")
-                .arg(base_backup.local_path().to_owned())
+                .arg(base_backup.path.to_owned())
                 .arg(self.path.to_owned())
                 .stdin(Stdio::null())
                 .status()?;
@@ -128,7 +119,28 @@ impl LocalBackup {
         Ok(())
     }
 
-    pub fn clone_from(&mut self, base_backup: &Option<&Arc<dyn Backup>>, src: &Arc<dyn Backup>) -> Result<(), Box<dyn Error>> {
+    fn wait_for_transfer(&self, rx: &Receiver<TransferResult>, return_after: Option<&OsStr>) -> Result<(u64, u64), Box<dyn Error>> {
+        let mut files_ok = 0;
+        let mut transfer_size = 0;
+        for result in rx.iter() {
+            match result.error {
+                None => {
+                    files_ok += 1;
+                    transfer_size += result.size;
+                },
+                Some(error) => log::error!("Could not fetch file {:?}: {:?}", result.source, error),
+            }
+            if let Some(path) = return_after {
+                if path == &result.dest {
+                    break;
+                }
+            }
+        }
+
+        Ok((files_ok, transfer_size))
+    }
+
+    pub fn clone_from(&mut self, base_backup: &Option<&Backup>, fetch_callback: &dyn Fn(&OsStr, &Path, &Sender<TransferResult>)) -> Result<(), Box<dyn Error>> {
         if self.is_finished() {
             log::info!("Cloning to {:?} already finished. Skipping", self.path);
             return Ok(());
@@ -139,7 +151,6 @@ impl LocalBackup {
         }
         self.create_volume(base_backup)?;
 
-        let worker_pool = ThreadPool::new(2);
         let (tx, rx) = channel();
 
         let mut files_total = 0;
@@ -147,15 +158,11 @@ impl LocalBackup {
 
         log::info!("Fetching metadata");
         for filename in Self::metadata_files() {
+            files_total += 1;
             let dest_path = self.path.join(filename);
-            match src.fetch_file(None, OsStr::new(filename), &dest_path) {
-                Ok(_) => (),
-                Err(error) => {
-                    log::error!("Could not fetch metadata file {}: {:?}", filename, error);
-                    return Err(Box::new(error));
-                },
-            }
+            fetch_callback(OsStr::new(filename), &dest_path, &tx.clone());
         }
+        let (mut files_ok, mut transfer_size) = self.wait_for_transfer(&rx, Some(self.path.join("manifest.gz").as_os_str()))?;
 
         log::info!("Starting data transfers");
         let mut files_in_manifest = HashSet::new();
@@ -176,19 +183,7 @@ impl LocalBackup {
                 }
                 if ! copied {
                     let dest_path = self.path.join("data").join(&data_path);
-                    let file_size = data.size;
-                    let tx = tx.clone();
-                    let src_clone = src.clone();
-                    worker_pool.execute(move || {
-                        tx.send(match src_clone.fetch_file(Some("data"), &data_path.as_os_str(), &dest_path) {
-                            Ok(_) => {
-                                Ok((data_path, file_size))
-                            },
-                            Err(error) => {
-                                Err((data_path, format!("{}", error)))
-                            }
-                        }).unwrap();
-                    });
+                    fetch_callback(&PathBuf::from("data").join(data_path).into_os_string(), &dest_path, &tx.clone());
                 }
             }
             Ok(())
@@ -196,17 +191,9 @@ impl LocalBackup {
         drop(tx);
 
         log::info!("Waiting for queued transfers to finish");
-        let mut files_ok = 0;
-        let mut transfer_size = 0;
-        for result in rx.iter() {
-            match result {
-                Ok((_, size)) => {
-                    files_ok += 1;
-                    transfer_size += size;
-                },
-                Err((path, error)) => log::error!("Could not fetch file {:?}: {:?}", path, error),
-            }
-        }
+        let (num, size) = self.wait_for_transfer(&rx, None)?;
+        files_ok += num;
+        transfer_size += size;
 
         if base_backup.is_some() {
             log::info!("Removing superfluous files (cloned from base, not in this backup)");
@@ -245,18 +232,8 @@ impl LocalBackup {
         }
         Ok(())
     }
-}
 
-impl Backup for LocalBackup {
-    fn id(&self) -> u64 {
-        self.id
-    }
-
-    fn local_path(&self) -> &Path {
-        &self.path
-    }
-
-    fn dir_name(&self) -> String {
+    pub fn dir_name(&self) -> String {
         format!("{:07} {}", self.id, self.timestamp)
     }
 
@@ -264,14 +241,7 @@ impl Backup for LocalBackup {
         self.file_path(prefix, path)
     }
 
-    fn fetch_file(&self, prefix: Option<&str>, path: &OsStr, dest: &Path) -> io::Result<u64> {
-        if let Some(parent) = dest.parent() {
-            fs::create_dir_all(parent)?;
-        }
-        fs::copy(self.file_path(prefix, path)?, dest)
-    }
-
-    fn load_checksums(&mut self) -> Result<(), Box<dyn Error>> {
+    pub fn load_checksums(&mut self) -> Result<(), Box<dyn Error>> {
         if self.checksums.is_empty() {
             log::info!("Loading checksums from backup {:?}", self.path);
             let mut reader = self.manifest_reader()?;
@@ -286,16 +256,8 @@ impl Backup for LocalBackup {
         Ok(())
     }
 
-    fn forget_checksums(&mut self) {
-        self.checksums = HashMap::new();
-    }
-
-    fn is_finished(&self) -> bool {
+    pub fn is_finished(&self) -> bool {
         self.path.join("manifest.gz").exists() && ! self.path.join(".bdup.partial").exists()
-    }
-
-    fn is_local(&self) -> bool {
-        true
     }
 
     fn get_checksums(&self) -> &HashMap<PathBuf, String> {
@@ -303,32 +265,23 @@ impl Backup for LocalBackup {
     }
 }
 
-impl Eq for dyn Backup {}
+impl Eq for Backup {}
 
-impl Ord for dyn Backup {
+impl Ord for Backup {
     fn cmp(&self, other: &Self) -> Ordering {
-        self.id().cmp(&other.id())
+        self.id.cmp(&other.id)
     }
 }
 
-impl PartialOrd for dyn Backup {
+impl PartialOrd for Backup {
     fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
-impl PartialEq for dyn Backup {
+impl PartialEq for Backup {
     fn eq(&self, other: &Self) -> bool {
-        self.id() == other.id()
+        self.id == other.id
     }
 }
-
-/*
-pub struct RemoteBackup {
-    url: String,
-    id: u64,
-    timestamp: String,
-    checksums: HashMap<PathBuf, String>,
-}
-*/
 

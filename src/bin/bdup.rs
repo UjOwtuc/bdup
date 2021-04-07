@@ -2,7 +2,7 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::str::FromStr;
-use fern;
+use threadpool::ThreadPool;
 
 use burp::client::Client;
 
@@ -93,8 +93,9 @@ fn clone_backups(clients: &[Client], dest: &Path) {
         fs::create_dir(dest).unwrap_or_else(|err| panic!("Could not create destination directory: {:?}", err));
     }
 
+    let transfer_threads = ThreadPool::new(2);
     for client in clients {
-        if let Err(error) = client.clone_backups_to(&dest.join(&client.name)) {
+        if let Err(error) = client.clone_backups_to(&dest.join(&client.name), &transfer_threads) {
             log::error!("Error cloning backups of {}: {:?}", client.name, error);
         }
     }
