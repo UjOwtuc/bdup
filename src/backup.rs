@@ -11,6 +11,17 @@ use flate2::read::GzDecoder;
 
 use crate::manifest;
 
+fn format_bytes(bytes: u64) -> String {
+    let prefix = ["", "ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi", "Yi"];
+    let mut index = 0;
+    let mut num: f64 = bytes as f64;
+    while num > 1000.0 {
+        num /= 1024.0;
+        index += 1;
+    }
+    format!("{:.2} {}B", num, prefix[index])
+}
+
 fn visit_dirs(dir: &Path, cb: &dyn Fn(&fs::DirEntry) -> Result<(), Box<dyn Error>>) -> Result<(), Box<dyn Error>> {
     if dir.is_dir() {
         for entry in fs::read_dir(dir)? {
@@ -218,7 +229,7 @@ impl Backup {
 
         let errors = files_total - files_ok - files_from_base;
         if errors == 0 {
-            log::info!("Cloning finished successfully: {} files total, {} from base backup, {} bytes transferred", files_total, files_from_base, transfer_size);
+            log::info!("Cloning finished successfully: {} files total, {} from base backup, {} transferred", files_total, files_from_base, format_bytes(transfer_size));
             fs::remove_file(self.path.join(".bdup.partial"))?;
             let status = Command::new("btrfs")
                 .arg("property")
@@ -231,7 +242,7 @@ impl Backup {
             assert!(status.success());
         }
         else {
-            log::warn!("Cloning finished with errors: {}/{} files were successful, {} from base backup, {} bytes transferred", files_from_base + files_ok, files_total, files_from_base, transfer_size);
+            log::warn!("Cloning finished with errors: {}/{} files were successful, {} from base backup, {} transferred", files_from_base + files_ok, files_total, files_from_base, format_bytes(transfer_size));
         }
         Ok(())
     }
