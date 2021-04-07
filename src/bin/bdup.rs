@@ -30,21 +30,31 @@ fn main() {
             .short("s")
             .long("source")
             .help("Source backup directory")
+            .value_name("DIR")
+            .default_value("/var/spool/burp")
             .takes_value(true))
         .arg(clap::Arg::with_name("log_level")
             .short("l")
             .long("log-level")
-            .help("Set log level (trace, debug, info, warn, error)")
+            .help("Set log level")
+            .possible_values(&["trace", "debug", "info", "warn", "error"])
+            .value_name("LEVEL")
+            .default_value("info")
             .takes_value(true))
         .arg(clap::Arg::with_name("clients")
             .short("c")
             .long("clients")
             .help("Comma separated list of clients to work on")
+            .value_name("CLIENTS")
+            .multiple(true)
+            .use_delimiter(true)
+            .value_delimiter(",")
             .takes_value(true))
         .arg(clap::Arg::with_name("dest_dir")
             .short("d")
             .long("dest-dir")
             .help("Destination directory")
+            .value_name("DIR")
             .takes_value(true)
             .required(true))
         .get_matches();
@@ -58,15 +68,13 @@ fn main() {
                 message
             ))
         })
-        .level(log::LevelFilter::from_str(matches.value_of("log_level").unwrap_or("info")).expect("Unknwown log level"))
+        .level(log::LevelFilter::from_str(matches.value_of("log_level").unwrap()).expect("Unknwown log level"))
         .chain(std::io::stdout())
         .apply().unwrap_or_else(|err| panic!("Log init failed: {:?}", err));
 
-
-
-    let source_dir = matches.value_of("source").unwrap_or("/var/spool/burp");
-    let client_names = if let Some(client_list) = matches.value_of("clients") {
-        client_list.split(',').map(String::from).collect()
+    let source_dir = matches.value_of("source").unwrap();
+    let client_names = if let Some(client_list) = matches.values_of("clients") {
+        client_list.map(|s| s.to_owned()).collect()
     }
     else {
         log::debug!("Generating a list of clients from directories in source dir ({})", source_dir);
