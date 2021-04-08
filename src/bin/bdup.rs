@@ -57,6 +57,19 @@ fn main() {
             .value_name("DIR")
             .takes_value(true)
             .required(true))
+        .arg(clap::Arg::with_name("iothreads")
+            .short("t")
+            .long("io-threads")
+            .help("Thread pool size for I/O operations (i.e. copying files)")
+            .value_name("NUM")
+            .takes_value(true)
+            .default_value("4")
+            .validator(|v: String| -> Result<(), String> {
+                match v.parse::<usize>() {
+                    Ok(_) => Ok(()),
+                    Err(err) => Err(format!("Not a valid number of threads: {:?}", err)),
+                }
+            }))
         .get_matches();
 
     fern::Dispatch::new()
@@ -93,15 +106,15 @@ fn main() {
     }
 
     let dest_dir = matches.value_of("dest_dir").unwrap();
-    clone_backups(&clients, &PathBuf::from(dest_dir));
+    clone_backups(&clients, &PathBuf::from(dest_dir), matches.value_of("iothreads").unwrap().parse::<usize>().unwrap());
 }
 
-fn clone_backups(clients: &[Client], dest: &Path) {
+fn clone_backups(clients: &[Client], dest: &Path, num_threads: usize) {
     if ! dest.exists() {
         fs::create_dir(dest).unwrap_or_else(|err| panic!("Could not create destination directory: {:?}", err));
     }
 
-    let transfer_threads = ThreadPool::new(2);
+    let transfer_threads = ThreadPool::new(num_threads);
     for client in clients {
         if let Err(error) = client.clone_backups_to(&dest.join(&client.name), &transfer_threads) {
             log::error!("Error cloning backups of {}: {:?}", client.name, error);
