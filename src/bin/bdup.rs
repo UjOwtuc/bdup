@@ -71,7 +71,7 @@ fn read_config(args: &clap::ArgMatches) -> Result<Config, Box<dyn Error>> {
     if let Some(clients) = args.values_of("client") {
         config.clients.extend(clients
             .map(|arg| -> ClientConfig {
-                let mut split = arg.splitn(2, "=");
+                let mut split = arg.splitn(2, '=');
                 ClientConfig {
                     name: split.next().unwrap().to_string(),
                     storage_url: split.next().unwrap().to_string()
@@ -112,7 +112,7 @@ fn init_args_parser() -> clap::App<'static, 'static> {
             .takes_value(true)
             .empty_values(false)
             .validator(|v: String| -> Result<(), String> {
-                if v.contains("=") {
+                if v.contains('=') {
                     Ok(())
                 }
                 else {
@@ -157,7 +157,7 @@ fn init_args_parser() -> clap::App<'static, 'static> {
                         return Ok(());
                     }
                 }
-                Err(format!("Needs to an integer greater than zero"))
+                Err("Needs to an integer greater than zero".to_string())
             }))
 }
 
@@ -193,7 +193,7 @@ fn main() {
         clients.push(client);
     }
 
-    clone_backups(&clients, &PathBuf::from(config.dest_dir), config.io_threads);
+    clone_backups(&clients, &config.dest_dir, config.io_threads);
 }
 
 fn clone_backups(clients: &[Client], dest: &Path, num_threads: usize) {

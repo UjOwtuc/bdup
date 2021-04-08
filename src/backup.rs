@@ -74,7 +74,7 @@ impl Backup {
             .stdout(Stdio::null())
             .status()?;
         assert!(status.success());
-        drop(&self.checksums);
+        self.checksums = HashMap::new();
         Ok(())
     }
 
@@ -140,7 +140,7 @@ impl Backup {
         Ok(())
     }
 
-    fn wait_for_transfer(&self, rx: &Receiver<TransferResult>, return_after: Option<&OsStr>) -> Result<(u64, u64), Box<dyn Error>> {
+    fn wait_for_transfer(&self, rx: &Receiver<TransferResult>, return_after: Option<&OsStr>) -> (u64, u64) {
         let mut files_ok = 0;
         let mut transfer_size = 0;
         for result in rx.iter() {
@@ -152,13 +152,13 @@ impl Backup {
                 Some(error) => log::error!("Could not fetch file {:?}: {:?}", result.source, error),
             }
             if let Some(path) = return_after {
-                if path == &result.dest {
+                if path == result.dest {
                     break;
                 }
             }
         }
 
-        Ok((files_ok, transfer_size))
+        (files_ok, transfer_size)
     }
 
     pub fn clone_from(&mut self, base_backup: &Option<&Backup>, fetch_callback: &dyn Fn(&OsStr, &Path, &Sender<TransferResult>)) -> Result<(), Box<dyn Error>> {
@@ -183,7 +183,7 @@ impl Backup {
             let dest_path = self.path.join(filename);
             fetch_callback(OsStr::new(filename), &dest_path, &tx.clone());
         }
-        let (mut files_ok, mut transfer_size) = self.wait_for_transfer(&rx, Some(self.path.join("manifest.gz").as_os_str()))?;
+        let (mut files_ok, mut transfer_size) = self.wait_for_transfer(&rx, Some(self.path.join("manifest.gz").as_os_str()));
 
         log::debug!("Starting data transfers");
         let mut files_in_manifest = HashSet::new();
@@ -213,7 +213,7 @@ impl Backup {
         drop(tx);
 
         log::debug!("Waiting for queued transfers to finish");
-        let (num, size) = self.wait_for_transfer(&rx, None)?;
+        let (num, size) = self.wait_for_transfer(&rx, None);
         files_ok += num;
         transfer_size += size;
 

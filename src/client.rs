@@ -84,7 +84,7 @@ impl Client {
         };
         log::info!("Cloning backup {}/{} {}", &self.name, source.dir_name(), base_msg);
         dest_backup.clone_from(&base_backup, &|source_path, dest_path, tx| {
-            let from = source.path.join(source_path).to_owned();
+            let from = source.path.join(source_path);
             let to = dest_path.to_owned();
             let tx_clone = tx.clone();
             transfer_threads.execute(move || {
@@ -98,7 +98,7 @@ impl Client {
                     error: None
                 };
                 match fs::copy(from, to) {
-                    Ok(size) => result.size = size.into(),
+                    Ok(size) => result.size = size,
                     Err(error) => result.error = Some(format!("{:?}", error)),
                 }
                 tx_clone.send(result).expect("Unable to send result");
