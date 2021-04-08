@@ -8,8 +8,23 @@ use std::error::Error;
 use std::process::{Command, Stdio};
 use std::cmp::Ordering;
 use flate2::read::GzDecoder;
+use threadpool::ThreadPool;
 
 use crate::manifest;
+
+enum VerifyResult {
+    Ok,
+    FilesizeMismatch(usize),
+    ChecksumMismatch(String),
+    Error(String),
+}
+
+struct VerifyFileResult {
+    path: PathBuf,
+    size: usize,
+    md5: String,
+    result: VerifyResult
+}
 
 fn format_bytes(bytes: u64) -> String {
     let prefix = ["", "ki", "Mi", "Gi", "Ti", "Pi", "Ei", "Zi", "Yi"];
@@ -54,14 +69,18 @@ pub struct Backup {
 impl Backup {
     pub fn new(path: &Path) -> Result<Self, Box<dyn Error>> {
         let dir = path.file_name().expect("Invalid path for local backup: no file_name component").to_string_lossy();
-        let id = dir[0..7].parse::<u64>()?;
-        let timestamp = dir[8..].to_owned();
+        let (id, timestamp) = Self::parse_name(&dir)?;
         Ok(Self {
             path: path.to_owned(),
             id,
             timestamp,
             checksums: HashMap::new(),
         })
+    }
+
+    fn parse_name(name: &str) -> Result<(u64, String), Box<dyn Error>> {
+        let id = name[0..7].parse::<u64>()?;
+        Ok((id, name[8..].to_owned()))
     }
 
     pub fn delete(&mut self) -> Result<(), Box<dyn Error>> {
@@ -285,6 +304,75 @@ impl Backup {
     fn get_checksums(&self) -> &HashMap<PathBuf, String> {
         &self.checksums
     }
+
+    pub fn verify(&mut self, worker_threads: usize) -> Result<u64, Box<dyn Error>> {
+        let data_path = self.path.join("data");
+        let mut files_in_manifest = HashSet::new();
+
+        let manifest = fs::File::open(self.path.join("manifest.gz"))?;
+        let gz = GzDecoder::new(manifest);
+        let mut reader = io::BufReader::new(gz);
+
+        let worker_pool = ThreadPool::new(worker_threads);
+        let (tx, rx) = channel();
+
+        let mut files_total = 0;
+        manifest::read_manifest(&mut reader, &mut |entry: &manifest::ManifestEntry| {
+            if let Some(data) = &entry.data {
+                files_total += 1;
+                files_in_manifest.insert(data.path.to_owned());
+
+                let size = data.size;
+                let checksum = data.md5.to_owned();
+                let file_path = data_path.join(&data.path);
+                let tx = tx.clone();
+                worker_pool.execute(move || {
+                    let result = match verify_file_md5(&file_path, size, &checksum) {
+                        Ok((true, _, _)) => VerifyResult::Ok,
+                        Ok((false, read_size, md5)) =>  {
+                            if read_size != size {
+                                VerifyResult::FilesizeMismatch(read_size)
+                            }
+                            else {
+                                VerifyResult::ChecksumMismatch(md5)
+                            }
+                        },
+                        Err(err) => VerifyResult::Error(format!("Error computing checksum: {:?}", err))
+                    };
+                    tx.send(VerifyFileResult{ path: file_path, size, md5: checksum, result }).unwrap();
+                });
+            }
+            Ok(())
+        })?;
+        drop(tx);
+
+        let mut files_ok = 0;
+        for result in rx.iter() {
+            match result.result {
+                VerifyResult::Ok => files_ok += 1,
+                VerifyResult::FilesizeMismatch(size) => {
+                    log::error!("File does not have correct size {:?}. Expected: {}, real: {}", result.path, result.size, size);
+                },
+                VerifyResult::ChecksumMismatch(computed) => {
+                    log::error!("File's checksum did not match {:?}. Expected: {}, computed: {}", result.path, result.md5, computed);
+                },
+                VerifyResult::Error(err) => {
+                    log::error!("Error while computing checksum for {:?}: {:?}", result.path, err);
+                }
+            };
+        }
+
+        visit_dirs(&data_path, &|entry: &fs::DirEntry| -> Result<(), Box<dyn Error>> {
+            let path = entry.path().strip_prefix(&data_path)?.to_owned();
+            if ! files_in_manifest.contains(&path) {
+                log::info!("Found superfluous file while validating: {:?}", path);
+            }
+            Ok(())
+        })?;
+
+        log::info!("Verify finished: {}/{} files verified successfully", files_ok, files_total);
+        Ok(files_total - files_ok)
+    }
 }
 
 impl Eq for Backup {}
@@ -307,9 +395,33 @@ impl PartialEq for Backup {
     }
 }
 
+fn verify_file_md5(file: &Path, size: usize, md5: &str) -> io::Result<(bool, usize, String)> {
+    let input = fs::File::open(file)?;
+    let (read_size, digest) = calc_md5(&mut GzDecoder::new(input))?;
+    let digest = format!("{:x}", digest);
+
+    Ok((read_size == size && md5 == digest, size, digest))
+}
+
+fn calc_md5<T: io::Read>(reader: &mut T) -> io::Result<(usize, md5::Digest)> {
+    let mut ctx = md5::Context::new();
+    let mut buf = vec![0_u8; 4096];
+    let mut size = 0;
+    loop {
+        let len = reader.read(&mut buf)?;
+        ctx.consume(&buf[0..len]);
+        size += len;
+        if len == 0 {
+            break;
+        }
+    }
+    Ok((size, ctx.compute()))
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn test_format_bytes() {
@@ -319,6 +431,19 @@ mod test {
         assert_eq!(format_bytes(456 * 1024), "456.00 kiB");
         assert_eq!(format_bytes((2.5 * 1024.0) as u64), "2.50 kiB");
         assert_eq!(format_bytes((99.0001 * 1024.0 * 1024.0) as u64), "99.00 MiB");
+    }
+
+    #[test]
+    fn parse_name() {
+        assert_eq!(Backup::parse_name("0000015 2019-04-13 18:02:26").unwrap(), (15, "2019-04-13 18:02:26".to_string()));
+    }
+
+    #[test]
+    fn calc_md5_lorem() {
+        let lorem = "Lorem ipsum dolor sit amet, consectetur adipisici elit, sed eiusmod tempor incidunt ut labore et dolore magna aliqua";
+        let (size, digest) = calc_md5(&mut Cursor::new(lorem)).unwrap();
+        assert_eq!(size, lorem.len());
+        assert_eq!(format!("{:x}", digest), "112e6e5d321385d524234210bdebec02")
     }
 }
 
