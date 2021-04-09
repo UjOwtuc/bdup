@@ -13,6 +13,10 @@ path = "src/lib.rs"
 name = "bdup"
 path = "src/bin/bdup.rs"
 
+[[bin]]
+name = "bverify"
+path = "src/bin/bverify.rs"
+
 [dependencies]
 flate2 = "1"
 chrono = "0.4"
