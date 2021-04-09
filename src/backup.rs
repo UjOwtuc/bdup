@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::io;
 use std::fs;
+use std::fmt;
 use std::sync::mpsc::{channel, Sender, Receiver};
 use std::ffi::{OsStr, OsString};
 use std::error::Error;
@@ -66,6 +67,18 @@ pub struct Backup {
     checksums: HashMap<PathBuf, String>,
 }
 
+#[derive(Debug)]
+struct InvalidNameError {
+    message: String
+}
+
+impl fmt::Display for InvalidNameError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+impl Error for InvalidNameError {}
+
 impl Backup {
     pub fn new(path: &Path) -> Result<Self, Box<dyn Error>> {
         let dir = path.file_name().expect("Invalid path for local backup: no file_name component").to_string_lossy();
@@ -79,8 +92,13 @@ impl Backup {
     }
 
     fn parse_name(name: &str) -> Result<(u64, String), Box<dyn Error>> {
-        let id = name[0..7].parse::<u64>()?;
-        Ok((id, name[8..].to_owned()))
+        if name.len() < 8 {
+            Err(Box::new(InvalidNameError{ message: "Name too short".to_string() }))
+        }
+        else {
+            let id = name[0..7].parse::<u64>()?;
+            Ok((id, name[8..].to_owned()))
+        }
     }
 
     pub fn delete(&mut self) -> Result<(), Box<dyn Error>> {
