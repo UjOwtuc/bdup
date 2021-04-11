@@ -38,21 +38,6 @@ fn format_bytes(bytes: u64) -> String {
     format!("{:.2} {}B", num, prefix[index])
 }
 
-fn visit_dirs(dir: &Path, cb: &dyn Fn(&fs::DirEntry) -> Result<(), Box<dyn Error>>) -> Result<(), Box<dyn Error>> {
-    if dir.is_dir() {
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                visit_dirs(&path, cb)?;
-            } else {
-                cb(&entry)?;
-            }
-        }
-    }
-    Ok(())
-}
-
 pub struct TransferResult {
     pub source: OsString,
     pub dest: OsString,
@@ -256,20 +241,19 @@ impl Backup {
 
         if base_backup.is_some() {
             log::debug!("Removing superfluous files (cloned from base, not in this backup)");
-            let data_path = self.path.join("data");
-            visit_dirs(&data_path, &|entry: &fs::DirEntry| -> Result<(), Box<dyn Error>> {
-                let path = entry.path().strip_prefix(&data_path)?.to_owned();
-                if ! files_in_manifest.contains(&path) {
-                    fs::remove_file(data_path.join(entry.path()))?;
-
-                    for parent in entry.path().parent().unwrap().ancestors() {
-                        if parent.read_dir()?.next().is_none() {
-                            fs::remove_dir(parent)?;
-                        }
+            let unwanted = self.unwanted_files()?;
+            log::debug!("Found {} unwanted files", unwanted.len());
+            unwanted.iter().map(|path| -> Result<(), Box<dyn Error>> {
+                fs::remove_file(path)?;
+                for parent in path.parent().unwrap().ancestors() {
+                    if parent.read_dir()?.next().is_none() {
+                        fs::remove_dir(parent)?;
                     }
                 }
                 Ok(())
-            })?;
+            })
+                .filter_map(|result| result.err())
+                .for_each(|err| log::warn!("Could not remove file: {:?}", err));
         }
 
         let errors = files_total - files_ok - files_from_base;
@@ -290,6 +274,23 @@ impl Backup {
             log::warn!("Cloning finished with errors: {}/{} files were successful, {} from base backup, {} transferred", files_from_base + files_ok, files_total, files_from_base, format_bytes(transfer_size));
         }
         Ok(())
+    }
+
+    fn unwanted_files(&self) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+        // TODO: return descriptive error instead
+        assert!(! self.checksums.is_empty());
+
+        let data_path = self.path.join("data");
+        let iter = fs::read_dir(&data_path)?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                if let Ok(path) = entry.path().strip_prefix(&data_path) {
+                    return ! self.checksums.contains_key(path)
+                }
+                false
+            })
+            .map(|entry| entry.path());
+        Ok(iter.collect())
     }
 
     pub fn dir_name(&self) -> String {
@@ -380,13 +381,10 @@ impl Backup {
             };
         }
 
-        visit_dirs(&data_path, &|entry: &fs::DirEntry| -> Result<(), Box<dyn Error>> {
-            let path = entry.path().strip_prefix(&data_path)?.to_owned();
-            if ! files_in_manifest.contains(&path) {
-                log::info!("Found superfluous file while validating: {:?}", path);
-            }
-            Ok(())
-        })?;
+        let unwanted = self.unwanted_files()?;
+        if ! unwanted.is_empty() {
+            log::info!("Found {} superfluous files while validating: {:?}", unwanted.len(), unwanted);
+        }
 
         log::info!("Verify finished: {}/{} files verified successfully", files_ok, files_total);
         Ok(files_total - files_ok)
@@ -457,11 +455,29 @@ mod test {
     }
 
     #[test]
+    fn parse_name_too_short() {
+        let result = Backup::parse_name("123");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn backup_new() {
+        let backup = Backup::new(&PathBuf::from("/some/distant/path/0000001 2021-04-11 00:00:00")).unwrap();
+        assert_eq!(backup.id, 1);
+        assert_eq!(backup.timestamp, "2021-04-11 00:00:00");
+    }
+
+    #[test]
     fn calc_md5_lorem() {
         let lorem = "Lorem ipsum dolor sit amet, consectetur adipisici elit, sed eiusmod tempor incidunt ut labore et dolore magna aliqua";
         let (size, digest) = calc_md5(&mut Cursor::new(lorem)).unwrap();
         assert_eq!(size, lorem.len());
         assert_eq!(format!("{:x}", digest), "112e6e5d321385d524234210bdebec02")
+    }
+
+    #[test]
+    fn metadata_contains_manifest() {
+        assert!(Backup::metadata_files().contains(&"manifest.gz"));
     }
 }
 
