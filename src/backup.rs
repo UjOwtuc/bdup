@@ -106,19 +106,18 @@ impl Backup {
     }
 
     fn manifest_reader(&self) -> Result<io::BufReader<flate2::read::GzDecoder<fs::File>>, Box<dyn Error>> {
-        let manifest = fs::File::open(self.fetch_temporary(None, &OsString::from("manifest.gz"))?)?;
+        let manifest = fs::File::open(self.file_path(None, &OsString::from("manifest.gz")))?;
         let gz = GzDecoder::new(manifest);
         Ok(io::BufReader::new(gz))
     }
 
-    fn file_path(&self, prefix: Option<&str>, path: &OsStr) -> io::Result<PathBuf> {
+    fn file_path(&self, prefix: Option<&str>, path: &OsStr) -> PathBuf {
         let mut real_path = PathBuf::from(&self.path);
         if let Some(prefix) = prefix {
             real_path = real_path.join(prefix);
         }
         real_path = real_path.join(path);
-        let _attr = real_path.metadata()?;
-        Ok(real_path)
+        real_path
     }
 
     fn create_volume(&self, base_backup: &Option<&Backup>) -> Result<(), Box<dyn Error>> {
@@ -295,10 +294,6 @@ impl Backup {
 
     pub fn dir_name(&self) -> String {
         format!("{:07} {}", self.id, self.timestamp)
-    }
-
-    fn fetch_temporary(&self, prefix: Option<&str>, path: &OsStr) -> io::Result<PathBuf> {
-        self.file_path(prefix, path)
     }
 
     pub fn load_checksums(&mut self) -> Result<(), Box<dyn Error>> {
@@ -478,6 +473,17 @@ mod test {
     #[test]
     fn metadata_contains_manifest() {
         assert!(Backup::metadata_files().contains(&"manifest.gz"));
+    }
+
+    #[test]
+    fn file_path() {
+        let backup = Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap();
+        assert_eq!(
+            backup.file_path(None, &OsString::from("filename")),
+            PathBuf::from("/0000001 2021-04-11 00:00:00/filename"));
+        assert_eq!(
+            backup.file_path(Some("prefix"), &OsString::from("filename")),
+            PathBuf::from("/0000001 2021-04-11 00:00:00/prefix/filename"));
     }
 }
 
