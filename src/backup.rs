@@ -45,6 +45,7 @@ pub struct TransferResult {
     pub error: Option<String>,
 }
 
+#[derive(Debug)]
 pub struct Backup {
     pub path: PathBuf,
     pub id: u64,
@@ -316,6 +317,9 @@ impl Backup {
     }
 
     fn get_checksums(&self) -> &HashMap<PathBuf, String> {
+        if self.checksums.is_empty() {
+            log::debug!("getting empty checksum map from backup {}", self.path.display());
+        }
         &self.checksums
     }
 
@@ -402,7 +406,7 @@ impl PartialOrd for Backup {
 
 impl PartialEq for Backup {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        self.id == other.id && self.timestamp == other.timestamp
     }
 }
 
@@ -538,6 +542,39 @@ mod test {
         let (num, _size_ignored) = backup.wait_for_transfer(&rx, None);
         assert_eq!(num, 0);
         sender.join().unwrap_or_else(|err| panic!("join failed: {:?}", err));
+    }
+
+    #[test]
+    fn dir_name() {
+        assert_eq!(
+            Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap().dir_name(),
+            "0000001 2021-04-11 00:00:00");
+        assert_eq!(
+            Backup::new(&PathBuf::from("/9876543 asd asd ! | äöüß")).unwrap().dir_name(),
+            "9876543 asd asd ! | äöüß");
+        assert_eq!(
+            Backup::new(&PathBuf::from("/ignore/any/path/before/backup/9999999 x")).unwrap().dir_name(),
+            "9999999 x");
+    }
+
+    #[test]
+    fn get_checksums() {
+        // getting an empty checksum map does not make sense but is not an error
+        assert!(Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap().get_checksums().is_empty());
+    }
+
+    #[test]
+    fn backup_equal() {
+        assert_eq!(Backup::new(&PathBuf::from("/0000001 some timestamp")).unwrap(),
+            Backup::new(&PathBuf::from("/0000001 some timestamp")).unwrap());
+
+        // different timestamp
+        assert_ne!(Backup::new(&PathBuf::from("/0000001 some timestamp")).unwrap(),
+            Backup::new(&PathBuf::from("/0000001 other timestamp")).unwrap());
+
+        // different id
+        assert_ne!(Backup::new(&PathBuf::from("/0000001 some timestamp")).unwrap(),
+            Backup::new(&PathBuf::from("/0000002 some timestamp")).unwrap());
     }
 }
 
