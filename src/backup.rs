@@ -433,6 +433,7 @@ fn calc_md5<T: io::Read>(reader: &mut T) -> io::Result<(usize, md5::Digest)> {
 mod test {
     use super::*;
     use std::io::Cursor;
+    use std::thread;
 
     #[test]
     fn test_format_bytes() {
@@ -484,6 +485,59 @@ mod test {
         assert_eq!(
             backup.file_path(Some("prefix"), &OsString::from("filename")),
             PathBuf::from("/0000001 2021-04-11 00:00:00/prefix/filename"));
+    }
+
+    fn send_file_results(tx: Sender<TransferResult>, error: Option<String>) {
+        tx.send(TransferResult{
+            source: OsString::from("source path"),
+            dest: OsString::from("first dest path"),
+            size: 123,
+            error: error.clone(),
+        }).unwrap_or_else(|err| panic!("send failed: {:?}", err));
+        tx.send(TransferResult{
+            source: OsString::from("source path"),
+            dest: OsString::from("second dest path"),
+            size: 123,
+            error: error.clone(),
+        }).unwrap_or_else(|err| panic!("send failed: {:?}", err));
+        tx.send(TransferResult{
+            source: OsString::from("source path"),
+            dest: OsString::from("third dest path"),
+            size: 123,
+            error: error,
+        }).unwrap_or_else(|err| panic!("send failed: {:?}", err));
+    }
+
+    #[test]
+    fn wait_for_named_transfer() {
+        let backup = Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap();
+        let (tx, rx) = channel();
+        let sender = thread::spawn(move || send_file_results(tx, None));
+        let (num, size) = backup.wait_for_transfer(&rx, Some(&OsString::from("second dest path")));
+        assert_eq!(num, 2);
+        assert_eq!(size, 246);
+        sender.join().unwrap_or_else(|err| panic!("join failed: {:?}", err));
+    }
+
+    #[test]
+    fn wait_for_all_transfer() {
+        let backup = Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap();
+        let (tx, rx) = channel();
+        let sender = thread::spawn(move || send_file_results(tx, None));
+        let (num, size) = backup.wait_for_transfer(&rx, None);
+        assert_eq!(num, 3);
+        assert_eq!(size, 369);
+        sender.join().unwrap_or_else(|err| panic!("join failed: {:?}", err));
+    }
+
+    #[test]
+    fn wait_for_transfer_errors() {
+        let backup = Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap();
+        let (tx, rx) = channel();
+        let sender = thread::spawn(move || send_file_results(tx, Some("test error".to_string())));
+        let (num, _size_ignored) = backup.wait_for_transfer(&rx, None);
+        assert_eq!(num, 0);
+        sender.join().unwrap_or_else(|err| panic!("join failed: {:?}", err));
     }
 }
 
