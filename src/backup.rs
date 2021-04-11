@@ -38,21 +38,6 @@ fn format_bytes(bytes: u64) -> String {
     format!("{:.2} {}B", num, prefix[index])
 }
 
-fn visit_dirs(dir: &Path, cb: &dyn Fn(&fs::DirEntry) -> Result<(), Box<dyn Error>>) -> Result<(), Box<dyn Error>> {
-    if dir.is_dir() {
-        for entry in fs::read_dir(dir)? {
-            let entry = entry?;
-            let path = entry.path();
-            if path.is_dir() {
-                visit_dirs(&path, cb)?;
-            } else {
-                cb(&entry)?;
-            }
-        }
-    }
-    Ok(())
-}
-
 pub struct TransferResult {
     pub source: OsString,
     pub dest: OsString,
@@ -60,6 +45,7 @@ pub struct TransferResult {
     pub error: Option<String>,
 }
 
+#[derive(Debug)]
 pub struct Backup {
     pub path: PathBuf,
     pub id: u64,
@@ -121,19 +107,17 @@ impl Backup {
     }
 
     fn manifest_reader(&self) -> Result<io::BufReader<flate2::read::GzDecoder<fs::File>>, Box<dyn Error>> {
-        let manifest = fs::File::open(self.fetch_temporary(None, &OsString::from("manifest.gz"))?)?;
+        let manifest = fs::File::open(self.file_path(None, &OsString::from("manifest.gz")))?;
         let gz = GzDecoder::new(manifest);
         Ok(io::BufReader::new(gz))
     }
 
-    fn file_path(&self, prefix: Option<&str>, path: &OsStr) -> io::Result<PathBuf> {
+    fn file_path(&self, prefix: Option<&str>, path: &OsStr) -> PathBuf {
         let mut real_path = PathBuf::from(&self.path);
         if let Some(prefix) = prefix {
             real_path = real_path.join(prefix);
         }
-        real_path = real_path.join(path);
-        let _attr = real_path.metadata()?;
-        Ok(real_path)
+        real_path.join(path)
     }
 
     fn create_volume(&self, base_backup: &Option<&Backup>) -> Result<(), Box<dyn Error>> {
@@ -256,20 +240,19 @@ impl Backup {
 
         if base_backup.is_some() {
             log::debug!("Removing superfluous files (cloned from base, not in this backup)");
-            let data_path = self.path.join("data");
-            visit_dirs(&data_path, &|entry: &fs::DirEntry| -> Result<(), Box<dyn Error>> {
-                let path = entry.path().strip_prefix(&data_path)?.to_owned();
-                if ! files_in_manifest.contains(&path) {
-                    fs::remove_file(data_path.join(entry.path()))?;
-
-                    for parent in entry.path().parent().unwrap().ancestors() {
-                        if parent.read_dir()?.next().is_none() {
-                            fs::remove_dir(parent)?;
-                        }
+            let unwanted = self.unwanted_files()?;
+            log::debug!("Found {} unwanted files", unwanted.len());
+            unwanted.iter().map(|path| -> Result<(), Box<dyn Error>> {
+                fs::remove_file(path)?;
+                for parent in path.parent().unwrap().ancestors() {
+                    if parent.read_dir()?.next().is_none() {
+                        fs::remove_dir(parent)?;
                     }
                 }
                 Ok(())
-            })?;
+            })
+                .filter_map(|result| result.err())
+                .for_each(|err| log::warn!("Could not remove file: {:?}", err));
         }
 
         let errors = files_total - files_ok - files_from_base;
@@ -292,12 +275,25 @@ impl Backup {
         Ok(())
     }
 
-    pub fn dir_name(&self) -> String {
-        format!("{:07} {}", self.id, self.timestamp)
+    fn unwanted_files(&self) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+        // TODO: return descriptive error instead
+        assert!(! self.checksums.is_empty());
+
+        let data_path = self.path.join("data");
+        let iter = fs::read_dir(&data_path)?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                if let Ok(path) = entry.path().strip_prefix(&data_path) {
+                    return ! self.checksums.contains_key(path)
+                }
+                false
+            })
+            .map(|entry| entry.path());
+        Ok(iter.collect())
     }
 
-    fn fetch_temporary(&self, prefix: Option<&str>, path: &OsStr) -> io::Result<PathBuf> {
-        self.file_path(prefix, path)
+    pub fn dir_name(&self) -> String {
+        format!("{:07} {}", self.id, self.timestamp)
     }
 
     pub fn load_checksums(&mut self) -> Result<(), Box<dyn Error>> {
@@ -320,6 +316,9 @@ impl Backup {
     }
 
     fn get_checksums(&self) -> &HashMap<PathBuf, String> {
+        if self.checksums.is_empty() {
+            log::debug!("getting empty checksum map from backup {}", self.path.display());
+        }
         &self.checksums
     }
 
@@ -380,13 +379,10 @@ impl Backup {
             };
         }
 
-        visit_dirs(&data_path, &|entry: &fs::DirEntry| -> Result<(), Box<dyn Error>> {
-            let path = entry.path().strip_prefix(&data_path)?.to_owned();
-            if ! files_in_manifest.contains(&path) {
-                log::info!("Found superfluous file while validating: {:?}", path);
-            }
-            Ok(())
-        })?;
+        let unwanted = self.unwanted_files()?;
+        if ! unwanted.is_empty() {
+            log::info!("Found {} superfluous files while validating: {:?}", unwanted.len(), unwanted);
+        }
 
         log::info!("Verify finished: {}/{} files verified successfully", files_ok, files_total);
         Ok(files_total - files_ok)
@@ -409,7 +405,7 @@ impl PartialOrd for Backup {
 
 impl PartialEq for Backup {
     fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
+        self.id == other.id && self.timestamp == other.timestamp
     }
 }
 
@@ -440,6 +436,7 @@ fn calc_md5<T: io::Read>(reader: &mut T) -> io::Result<(usize, md5::Digest)> {
 mod test {
     use super::*;
     use std::io::Cursor;
+    use std::thread;
 
     #[test]
     fn test_format_bytes() {
@@ -457,11 +454,126 @@ mod test {
     }
 
     #[test]
+    fn parse_name_too_short() {
+        let result = Backup::parse_name("123");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn backup_new() {
+        let backup = Backup::new(&PathBuf::from("/some/distant/path/0000001 2021-04-11 00:00:00")).unwrap();
+        assert_eq!(backup.id, 1);
+        assert_eq!(backup.timestamp, "2021-04-11 00:00:00");
+    }
+
+    #[test]
     fn calc_md5_lorem() {
         let lorem = "Lorem ipsum dolor sit amet, consectetur adipisici elit, sed eiusmod tempor incidunt ut labore et dolore magna aliqua";
         let (size, digest) = calc_md5(&mut Cursor::new(lorem)).unwrap();
         assert_eq!(size, lorem.len());
         assert_eq!(format!("{:x}", digest), "112e6e5d321385d524234210bdebec02")
+    }
+
+    #[test]
+    fn metadata_contains_manifest() {
+        assert!(Backup::metadata_files().contains(&"manifest.gz"));
+    }
+
+    #[test]
+    fn file_path() {
+        let backup = Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap();
+        assert_eq!(
+            backup.file_path(None, &OsString::from("filename")),
+            PathBuf::from("/0000001 2021-04-11 00:00:00/filename"));
+        assert_eq!(
+            backup.file_path(Some("prefix"), &OsString::from("filename")),
+            PathBuf::from("/0000001 2021-04-11 00:00:00/prefix/filename"));
+    }
+
+    fn send_file_results(tx: Sender<TransferResult>, error: Option<String>) {
+        tx.send(TransferResult{
+            source: OsString::from("source path"),
+            dest: OsString::from("first dest path"),
+            size: 123,
+            error: error.clone(),
+        }).unwrap_or_else(|err| panic!("send failed: {:?}", err));
+        tx.send(TransferResult{
+            source: OsString::from("source path"),
+            dest: OsString::from("second dest path"),
+            size: 123,
+            error: error.clone(),
+        }).unwrap_or_else(|err| panic!("send failed: {:?}", err));
+        tx.send(TransferResult{
+            source: OsString::from("source path"),
+            dest: OsString::from("third dest path"),
+            size: 123,
+            error: error,
+        }).unwrap_or_else(|err| panic!("send failed: {:?}", err));
+    }
+
+    #[test]
+    fn wait_for_named_transfer() {
+        let backup = Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap();
+        let (tx, rx) = channel();
+        let sender = thread::spawn(move || send_file_results(tx, None));
+        let (num, size) = backup.wait_for_transfer(&rx, Some(&OsString::from("second dest path")));
+        assert_eq!(num, 2);
+        assert_eq!(size, 246);
+        sender.join().unwrap_or_else(|err| panic!("join failed: {:?}", err));
+    }
+
+    #[test]
+    fn wait_for_all_transfer() {
+        let backup = Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap();
+        let (tx, rx) = channel();
+        let sender = thread::spawn(move || send_file_results(tx, None));
+        let (num, size) = backup.wait_for_transfer(&rx, None);
+        assert_eq!(num, 3);
+        assert_eq!(size, 369);
+        sender.join().unwrap_or_else(|err| panic!("join failed: {:?}", err));
+    }
+
+    #[test]
+    fn wait_for_transfer_errors() {
+        let backup = Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap();
+        let (tx, rx) = channel();
+        let sender = thread::spawn(move || send_file_results(tx, Some("test error".to_string())));
+        let (num, _size_ignored) = backup.wait_for_transfer(&rx, None);
+        assert_eq!(num, 0);
+        sender.join().unwrap_or_else(|err| panic!("join failed: {:?}", err));
+    }
+
+    #[test]
+    fn dir_name() {
+        assert_eq!(
+            Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap().dir_name(),
+            "0000001 2021-04-11 00:00:00");
+        assert_eq!(
+            Backup::new(&PathBuf::from("/9876543 asd asd ! | äöüß")).unwrap().dir_name(),
+            "9876543 asd asd ! | äöüß");
+        assert_eq!(
+            Backup::new(&PathBuf::from("/ignore/any/path/before/backup/9999999 x")).unwrap().dir_name(),
+            "9999999 x");
+    }
+
+    #[test]
+    fn get_checksums() {
+        // getting an empty checksum map does not make sense but is not an error
+        assert!(Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap().get_checksums().is_empty());
+    }
+
+    #[test]
+    fn backup_equal() {
+        assert_eq!(Backup::new(&PathBuf::from("/0000001 some timestamp")).unwrap(),
+            Backup::new(&PathBuf::from("/0000001 some timestamp")).unwrap());
+
+        // different timestamp
+        assert_ne!(Backup::new(&PathBuf::from("/0000001 some timestamp")).unwrap(),
+            Backup::new(&PathBuf::from("/0000001 other timestamp")).unwrap());
+
+        // different id
+        assert_ne!(Backup::new(&PathBuf::from("/0000001 some timestamp")).unwrap(),
+            Backup::new(&PathBuf::from("/0000002 some timestamp")).unwrap());
     }
 }
 
