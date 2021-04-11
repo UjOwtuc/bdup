@@ -117,8 +117,7 @@ impl Backup {
         if let Some(prefix) = prefix {
             real_path = real_path.join(prefix);
         }
-        real_path = real_path.join(path);
-        real_path
+        real_path.join(path)
     }
 
     fn create_volume(&self, base_backup: &Option<&Backup>) -> Result<(), Box<dyn Error>> {
