@@ -12,21 +12,29 @@ path = "src/lib.rs"
 [[bin]]
 name = "bdup"
 path = "src/bin/bdup.rs"
+required-features = ["bdup"]
 
 [[bin]]
 name = "bverify"
 path = "src/bin/bverify.rs"
+required-features = ["bverify"]
+
+[features]
+default = ["bdup", "bverify"]
+bdup = ["cli"]
+bverify = ["cli"]
+cli = ["fern", "serde_yaml"]
 
 [dependencies]
 flate2 = "1"
 chrono = "0.4"
 log = { version = "0.4", features = ["serde"] }
-fern = "0.6"
+fern = { version = "0.6", optional = true }
 md5 = "0.7"
 threadpool = "1"
 serde = { version = "1.0", features = ["derive"] }
 serde_derive = "1.0"
-serde_yaml = "0.8"
+serde_yaml = { version = "0.8", optional = true }
 
 [dependencies.clap]
 version = "2.33"

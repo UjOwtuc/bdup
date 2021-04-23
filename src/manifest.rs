@@ -7,14 +7,18 @@ use std::ffi::OsStr;
 use std::os::unix::ffi::OsStrExt;
 use chrono::NaiveDateTime;
 
-
 #[derive(Debug)]
 pub struct ManifestReadError {
     details: String
 }
 
 impl ManifestReadError {
-    pub fn new(msg: &str) -> ManifestReadError {
+    /// Create a ManifestReadError, provide details:
+    /// ```
+    /// use burp::manifest::ManifestReadError;
+    /// println!("error: {:?}", ManifestReadError::new("something weird happened"));
+    /// ```
+    pub fn new(msg: &str) -> Self {
         ManifestReadError{ details: msg.to_string() }
     }
 }
@@ -31,48 +35,47 @@ impl Error for ManifestReadError {
     }
 }
 
+/// Unix mode type
 #[derive(Default)]
 pub struct Mode {
     mode: u32
 }
 
-fn format_mode_part(part: u32, dest: &mut String) {
-    dest.push_str(match part & 4 {
-        0 => "-",
-        _ => "r"
-    });
-    dest.push_str(match part & 2 {
-        0 => "-",
-        _ => "w"
-    });
-    dest.push_str(match part & 1 {
-        0 => "-",
-        _ => "x"
-    });
-}
-
-impl From<&Mode> for String {
-    fn from(mode: &Mode) -> String {
-        let mut readable = String::new();
-        format_mode_part((mode.mode & 0o700) >> 6, &mut readable);
-        format_mode_part((mode.mode & 0o70) >> 3, &mut readable);
-        format_mode_part(mode.mode, &mut readable);
-        if mode.mode & 0o4000 == 0o4000 {
-            readable.replace_range(2..3, "s");
-        }
-        readable
+impl Mode {
+    fn new<T>(mode: T) -> Self
+    where
+        T: Into<i64>
+    {
+        Self { mode: (mode.into() & 0xFFFFFFFF).try_into().unwrap() }
     }
-}
 
-impl From<i64> for Mode {
-    fn from(value: i64) -> Self {
-        Mode { mode: u32::try_from(value & 0xFFFFFFFF).unwrap() }
+    /// Format a single octet like "ls -l" would do it.
+    fn format_mode_part(part: u32, dest: &mut String) {
+        dest.push_str(match part & 4 {
+            0 => "-",
+            _ => "r"
+        });
+        dest.push_str(match part & 2 {
+            0 => "-",
+            _ => "w"
+        });
+        dest.push_str(match part & 1 {
+            0 => "-",
+            _ => "x"
+        });
     }
 }
 
 impl fmt::Display for Mode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", String::from(self))
+        let mut readable = String::new();
+        Mode::format_mode_part((self.mode & 0o700) >> 6, &mut readable);
+        Mode::format_mode_part((self.mode & 0o70) >> 3, &mut readable);
+        Mode::format_mode_part(self.mode, &mut readable);
+        if self.mode & 0o4000 == 0o4000 {
+            readable.replace_range(2..3, "s");
+        }
+        write!(f, "{}", readable)
     }
 }
 
@@ -110,6 +113,9 @@ pub struct Stat {
     // salt: String
 }
 
+/// burp's (or bacula's?) own version of base64 encoding integer types. An encoded value consists
+/// of an optional leading '-' for negative values followed by one or more characters from the
+/// alphabet. Each character is worth 6 bits, there is no trailing padding.
 fn burp_decode_base64(value: &str) -> i64 {
     let mut result: i64 = 0;
     let mut negative = false;
@@ -152,7 +158,7 @@ impl TryFrom<&[u8]> for Stat {
         let mut result = Self{ ..Default::default() };
         result.containing_device = burp_decode_base64(stat[0]).try_into().map_err(|err| ManifestReadError::new(&format!("corrupt containing_device: {:?}", err)))?;
         result.inode = burp_decode_base64(stat[1]).try_into().map_err(|err| ManifestReadError::new(&format!("corrupt inode: {:?}", err)))?;
-        result.mode = burp_decode_base64(stat[2]).try_into().unwrap();
+        result.mode = Mode::new(burp_decode_base64(stat[2]));
         result.num_links = burp_decode_base64(stat[3]).try_into().unwrap();
         result.owner_id = burp_decode_base64(stat[4]).try_into().unwrap();
         result.group_id = burp_decode_base64(stat[5]).try_into().unwrap();
@@ -348,29 +354,35 @@ mod tests {
     }
 
     #[test]
-    fn decode() {
+    fn decode_base64() {
         assert_eq!(burp_decode_base64("Po"), 1000);
+    }
+
+    #[test]
+    #[should_panic]
+    fn base64_invalid_char() {
+        burp_decode_base64(".");
     }
 
     #[test]
     fn format_part() {
         let mut val = String::new();
-        format_mode_part(0o7, &mut val);
+        Mode::format_mode_part(0o7, &mut val);
         assert_eq!(val, "rwx");
 
         val.clear();
-        format_mode_part(0o6, &mut val);
+        Mode::format_mode_part(0o6, &mut val);
         assert_eq!(val, "rw-");
 
         val.clear();
-        format_mode_part(0o1, &mut val);
+        Mode::format_mode_part(0o1, &mut val);
         assert_eq!(val, "--x");
     }
 
     #[test]
     fn format_mode() {
-        let mode = Mode{ mode: 0o147 };
-        assert_eq!(String::from(&mode), "--xr--rwx");
+        let mode = Mode::new(0o147);
+        assert_eq!(format!("{}", mode), "--xr--rwx");
     }
 }
 

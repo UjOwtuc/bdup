@@ -243,7 +243,7 @@ impl Backup {
             let unwanted = self.unwanted_files()?;
             log::debug!("Found {} unwanted files", unwanted.len());
             unwanted.iter().map(|path| -> Result<(), Box<dyn Error>> {
-                fs::remove_file(path)?;
+                fs::remove_file(path)?;  // TODO: path might be a directory
                 for parent in path.parent().unwrap().ancestors() {
                     if parent.read_dir()?.next().is_none() {
                         fs::remove_dir(parent)?;
