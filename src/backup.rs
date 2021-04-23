@@ -274,10 +274,20 @@ impl Backup {
 
         if base_backup.is_some() {
             log::debug!("Removing superfluous files (cloned from base, not in this backup)");
-            let unwanted = self.unwanted_files()?;
+            let mut unwanted = self.unwanted_files()?;
+
+            // sort unwanted files/dirs by number of path components to remove contained files
+            // prior to containing dirs
+            unwanted.sort_by(|a, b| {
+                a.components()
+                    .count()
+                    .partial_cmp(&b.components().count())
+                    .unwrap()
+            });
             log::debug!("Found {} unwanted files", unwanted.len());
             unwanted
                 .iter()
+                .filter(|path| path.exists())
                 .map(|path| -> Result<(), Box<dyn Error>> {
                     match path.is_dir() {
                         true => fs::remove_dir(path)?,
