@@ -324,12 +324,21 @@ impl Backup {
     }
 
     fn unwanted_files(&self) -> Result<Vec<PathBuf>, Box<dyn Error>> {
-        // TODO: return descriptive error instead
         assert!(!self.checksums.is_empty());
 
         let data_path = self.path.join("data");
         let iter = fs::read_dir(&data_path)?
             .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                if let Some(parent) = entry.path().parent() {
+                    if parent == data_path && entry.path().is_dir() {
+                        // assume directories directly below "data" are always needed (usually
+                        // those are "data/t" or "data/0000")
+                        return false;
+                    }
+                }
+                true
+            })
             .filter(|entry| {
                 if let Ok(path) = entry.path().strip_prefix(&data_path) {
                     return !self.checksums.contains_key(path);
@@ -385,9 +394,12 @@ impl Backup {
         let worker_pool = ThreadPool::new(worker_threads);
         let (tx, rx) = channel();
 
+        log::debug!("Verifying checksums for backup {}", self.path.display());
         let mut files_total = 0;
         manifest::read_manifest(&mut reader, &mut |entry: &manifest::ManifestEntry| {
             if let Some(data) = &entry.data {
+                self.checksums
+                    .insert(data.path.to_owned(), data.md5.to_owned());
                 files_total += 1;
                 files_in_manifest.insert(data.path.to_owned());
 
@@ -452,6 +464,7 @@ impl Backup {
             };
         }
 
+        log::debug!("Searching for unwanted files in {}", self.path.display());
         let unwanted = self.unwanted_files()?;
         if !unwanted.is_empty() {
             log::info!(
@@ -462,9 +475,10 @@ impl Backup {
         }
 
         log::info!(
-            "Verify finished: {}/{} files verified successfully",
+            "Verify finished: {}/{} files verified successfully, {} unwanted files",
             files_ok,
-            files_total
+            files_total,
+            unwanted.len()
         );
         Ok(files_total - files_ok)
     }

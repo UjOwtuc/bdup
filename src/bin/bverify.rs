@@ -44,7 +44,8 @@ fn init_args_parser() -> clap::App<'static, 'static> {
                 .help("Directories of backups to verify")
                 .value_name("DIR")
                 .takes_value(true)
-                .empty_values(false),
+                .empty_values(false)
+                .required(true),
         )
 }
 
