@@ -1,12 +1,11 @@
-use std::path::Path;
-use std::io;
-use std::fs;
 use std::error::Error;
+use std::fs;
+use std::io;
+use std::path::Path;
 use threadpool::ThreadPool;
 
 use crate::backup::Backup;
 use crate::backup::TransferResult;
-
 
 pub struct Client {
     pub name: String,
@@ -26,15 +25,24 @@ impl Client {
             let entry = dir_entry?;
             match Backup::new(&entry.path()) {
                 Ok(backup) => self.backups.push(backup),
-                Err(error) => log::debug!("Skipping path {:?} because it is not a backup: {:?}", &entry.path(), error)
+                Err(error) => log::debug!(
+                    "Skipping path {:?} because it is not a backup: {:?}",
+                    &entry.path(),
+                    error
+                ),
             };
         }
-        self.backups.sort_unstable_by(|a, b| {a.id.partial_cmp(&b.id).unwrap()});
+        self.backups
+            .sort_unstable_by(|a, b| a.id.partial_cmp(&b.id).unwrap());
         Ok(())
     }
 
-    pub fn clone_backups_to(&self, dest: &Path, transfer_threads: &ThreadPool) -> Result<(), Box<dyn Error>> {
-        if ! dest.exists() {
+    pub fn clone_backups_to(
+        &self,
+        dest: &Path,
+        transfer_threads: &ThreadPool,
+    ) -> Result<(), Box<dyn Error>> {
+        if !dest.exists() {
             fs::create_dir(dest)?;
         }
 
@@ -45,10 +53,18 @@ impl Client {
             self.clone_backup(source, dest, &mut cloned, transfer_threads)?;
         }
 
-        for backup in cloned.backups.iter_mut().filter(|backup| ! self.backups.contains(backup)) {
+        for backup in cloned
+            .backups
+            .iter_mut()
+            .filter(|backup| !self.backups.contains(backup))
+        {
             match backup.delete() {
                 Ok(_) => log::debug!("Removed old backup {}", backup.path.display()),
-                Err(error) => log::error!("Could not remove old backup {}: {:?}", backup.path.display(), error),
+                Err(error) => log::error!(
+                    "Could not remove old backup {}: {:?}",
+                    backup.path.display(),
+                    error
+                ),
             }
         }
 
@@ -56,33 +72,47 @@ impl Client {
     }
 
     fn find_base_for(&mut self, id: u64) -> Option<&Backup> {
-        let base = self.backups.iter_mut()
+        let base = self
+            .backups
+            .iter_mut()
             .filter(|backup| backup.id < id)
             .max();
 
         if let Some(backup) = base {
-            backup.load_checksums().expect("Could not load checksums from base backup");
+            backup
+                .load_checksums()
+                .expect("Could not load checksums from base backup");
             Some(backup)
-        }
-        else {
+        } else {
             None
         }
     }
 
-    fn clone_backup(&self, source: &Backup, dest: &Path, cloned: &mut Client, transfer_threads: &ThreadPool) -> Result<(), Box<dyn Error>> {
+    fn clone_backup(
+        &self,
+        source: &Backup,
+        dest: &Path,
+        cloned: &mut Client,
+        transfer_threads: &ThreadPool,
+    ) -> Result<(), Box<dyn Error>> {
         let mut dest_backup = Backup::new(&dest.join(&source.dir_name()))?;
 
         if dest_backup.is_finished() {
             log::debug!("Backup {} is already finished.", dest_backup.path.display());
-            return Ok(())
+            return Ok(());
         }
 
         let base_backup = cloned.find_base_for(source.id);
         let base_msg = match base_backup {
             Some(backup) => format!("with base {}", backup.path.display()),
-            None => "without base".to_string()
+            None => "without base".to_string(),
         };
-        log::info!("Cloning backup {}/{} {}", &self.name, source.dir_name(), base_msg);
+        log::info!(
+            "Cloning backup {}/{} {}",
+            &self.name,
+            source.dir_name(),
+            base_msg
+        );
         dest_backup.clone_from(&base_backup, &|source_path, dest_path, tx| {
             let from = source.path.join(source_path);
             let to = dest_path.to_owned();
@@ -95,7 +125,7 @@ impl Client {
                     source: from.to_owned().into(),
                     dest: to.to_owned().into(),
                     size: 0,
-                    error: None
+                    error: None,
                 };
                 match fs::copy(from, to) {
                     Ok(size) => result.size = size,
@@ -108,4 +138,3 @@ impl Client {
         Ok(())
     }
 }
-

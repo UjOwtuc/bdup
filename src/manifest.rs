@@ -1,15 +1,15 @@
-use std::convert::{TryFrom, TryInto};
-use std::{fmt, str};
-use std::error::Error;
-use std::io::BufRead;
-use std::path::PathBuf;
-use std::ffi::OsStr;
-use std::os::unix::ffi::OsStrExt;
 use chrono::NaiveDateTime;
+use std::convert::{TryFrom, TryInto};
+use std::error::Error;
+use std::ffi::OsStr;
+use std::io::BufRead;
+use std::os::unix::ffi::OsStrExt;
+use std::path::PathBuf;
+use std::{fmt, str};
 
 #[derive(Debug)]
 pub struct ManifestReadError {
-    details: String
+    details: String,
 }
 
 impl ManifestReadError {
@@ -19,7 +19,9 @@ impl ManifestReadError {
     /// println!("error: {:?}", ManifestReadError::new("something weird happened"));
     /// ```
     pub fn new(msg: &str) -> Self {
-        ManifestReadError{ details: msg.to_string() }
+        ManifestReadError {
+            details: msg.to_string(),
+        }
     }
 }
 
@@ -38,30 +40,32 @@ impl Error for ManifestReadError {
 /// Unix mode type
 #[derive(Default)]
 pub struct Mode {
-    mode: u32
+    mode: u32,
 }
 
 impl Mode {
     fn new<T>(mode: T) -> Self
     where
-        T: Into<i64>
+        T: Into<i64>,
     {
-        Self { mode: (mode.into() & 0xFFFFFFFF).try_into().unwrap() }
+        Self {
+            mode: (mode.into() & 0xFFFFFFFF).try_into().unwrap(),
+        }
     }
 
     /// Format a single octet like "ls -l" would do it.
     fn format_mode_part(part: u32, dest: &mut String) {
         dest.push_str(match part & 4 {
             0 => "-",
-            _ => "r"
+            _ => "r",
         });
         dest.push_str(match part & 2 {
             0 => "-",
-            _ => "w"
+            _ => "w",
         });
         dest.push_str(match part & 1 {
             0 => "-",
-            _ => "x"
+            _ => "x",
         });
     }
 }
@@ -106,7 +110,7 @@ pub struct Stat {
     pub mod_time: u64,
     pub change_time: u64,
     pub ch_flags: u64,
-    win_attr: String,  // don't know, what this might be
+    win_attr: String, // don't know, what this might be
 
     pub compression: i32,
     // encryption: i32,
@@ -130,12 +134,12 @@ fn burp_decode_base64(value: &str) -> i64 {
     for c in val.chars() {
         result <<= 6;
         match c {
-            'A' ..= 'Z' => result += (c as u8 - b'A') as i64,
-            'a' ..= 'z' => result += (c as u8 - b'a') as i64 + 26,
-            '0' ..= '9' => result += (c as u8 - b'0') as i64 + 32,
+            'A'..='Z' => result += (c as u8 - b'A') as i64,
+            'a'..='z' => result += (c as u8 - b'a') as i64 + 26,
+            '0'..='9' => result += (c as u8 - b'0') as i64 + 32,
             '+' => result += 62,
             '/' => result += 63,
-            _ => panic!()
+            _ => panic!(),
         }
     }
 
@@ -149,15 +153,26 @@ impl TryFrom<&[u8]> for Stat {
     type Error = ManifestReadError;
 
     fn try_from(line: &[u8]) -> Result<Self, Self::Error> {
-        let source = str::from_utf8(line).map_err(|err| ManifestReadError::new(&format!("Non utf8 chars in stat line: {:?}", err)))?;
+        let source = str::from_utf8(line).map_err(|err| {
+            ManifestReadError::new(&format!("Non utf8 chars in stat line: {:?}", err))
+        })?;
         let stat = source.split(' ').collect::<Vec<&str>>();
         if stat.len() < 16 {
-            return Err(ManifestReadError::new(&format!("Too few entries in stat line. Expected 16, found {}", stat.len())));
+            return Err(ManifestReadError::new(&format!(
+                "Too few entries in stat line. Expected 16, found {}",
+                stat.len()
+            )));
         }
 
-        let mut result = Self{ ..Default::default() };
-        result.containing_device = burp_decode_base64(stat[0]).try_into().map_err(|err| ManifestReadError::new(&format!("corrupt containing_device: {:?}", err)))?;
-        result.inode = burp_decode_base64(stat[1]).try_into().map_err(|err| ManifestReadError::new(&format!("corrupt inode: {:?}", err)))?;
+        let mut result = Self {
+            ..Default::default()
+        };
+        result.containing_device = burp_decode_base64(stat[0]).try_into().map_err(|err| {
+            ManifestReadError::new(&format!("corrupt containing_device: {:?}", err))
+        })?;
+        result.inode = burp_decode_base64(stat[1])
+            .try_into()
+            .map_err(|err| ManifestReadError::new(&format!("corrupt inode: {:?}", err)))?;
         result.mode = Mode::new(burp_decode_base64(stat[2]));
         result.num_links = burp_decode_base64(stat[3]).try_into().unwrap();
         result.owner_id = burp_decode_base64(stat[4]).try_into().unwrap();
@@ -187,7 +202,11 @@ pub struct ManifestEntryData {
 
 impl ManifestEntryData {
     fn new() -> Self {
-        Self { path: PathBuf::new(), size: 0, md5: "".to_string() }
+        Self {
+            path: PathBuf::new(),
+            size: 0,
+            md5: "".to_string(),
+        }
     }
 }
 
@@ -201,7 +220,7 @@ pub struct ManifestEntry {
 
 impl ManifestEntry {
     fn new() -> Self {
-        Self{
+        Self {
             file_type: FileType::Unknown,
             path: PathBuf::new(),
             stat: Stat::default(),
@@ -211,14 +230,17 @@ impl ManifestEntry {
     }
 }
 
-
 impl fmt::Display for ManifestEntry {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", match &self.file_type {
-            FileType::Directory => 'd',
-            FileType::SoftLink => 'l',
-            _ => '-',
-        })?;
+        write!(
+            f,
+            "{}",
+            match &self.file_type {
+                FileType::Directory => 'd',
+                FileType::SoftLink => 'l',
+                _ => '-',
+            }
+        )?;
 
         let owner = format!("{}", self.stat.owner_id);
         let group = format!("{}", self.stat.group_id);
@@ -226,17 +248,19 @@ impl fmt::Display for ManifestEntry {
 
         let size = if let Some(data) = &self.data {
             data.size
-        }
-        else {
+        } else {
             0
         };
 
-        write!(f, "{} {:10} {:10} {:8} {} {:?}", self.stat.mode, owner, group, size, tstamp, &self.path)?;
+        write!(
+            f,
+            "{} {:10} {:10} {:8} {} {:?}",
+            self.stat.mode, owner, group, size, tstamp, &self.path
+        )?;
         if self.file_type == FileType::SoftLink {
             if let Some(target) = &self.link_target {
                 write!(f, " -> {:?}", &target)?;
-            }
-            else {
+            } else {
                 write!(f, " -> (unknown target)")?;
             }
         }
@@ -244,49 +268,56 @@ impl fmt::Display for ManifestEntry {
     }
 }
 
-fn add_manifest_line(entry: &mut ManifestEntry, kind: &char, data: &[u8]) -> Result<bool, Box<dyn Error>> {
+fn add_manifest_line(
+    entry: &mut ManifestEntry,
+    kind: &char,
+    data: &[u8],
+) -> Result<bool, Box<dyn Error>> {
     let mut finished = false;
 
     match kind {
-        'r' => entry.stat = Stat::try_from(&data[..])?,
+        'r' => entry.stat = Stat::try_from(data)?,
         'm' => {
             entry.file_type = FileType::Metadata;
             entry.path = PathBuf::from(OsStr::from_bytes(data));
-        },
+        }
         'f' => {
             entry.file_type = FileType::Plain;
             entry.path = PathBuf::from(OsStr::from_bytes(data));
-        },
-        't' => entry.data.get_or_insert_with(ManifestEntryData::new).path = PathBuf::from(OsStr::from_bytes(data)),
+        }
+        't' => {
+            entry.data.get_or_insert_with(ManifestEntryData::new).path =
+                PathBuf::from(OsStr::from_bytes(data))
+        }
         'L' => entry.file_type = FileType::HardLink,
         's' => {
             entry.file_type = FileType::Special;
             entry.path = PathBuf::from(OsStr::from_bytes(data));
             finished = true;
-        },
+        }
         'd' => {
             entry.file_type = FileType::Directory;
             entry.path = PathBuf::from(OsStr::from_bytes(data));
             finished = true;
-        },
+        }
         'l' => {
             if entry.file_type == FileType::SoftLink {
                 entry.link_target = Some(PathBuf::from(OsStr::from_bytes(data)));
                 finished = true;
-            }
-            else {
+            } else {
                 entry.file_type = FileType::SoftLink;
                 entry.path = PathBuf::from(OsStr::from_bytes(data));
             }
-        },
+        }
         'x' => {
             let info = str::from_utf8(data).unwrap();
             let val = info.split(':').collect::<Vec<&str>>();
-            entry.data.get_or_insert_with(ManifestEntryData::new).size = val[0].parse::<usize>().unwrap();
+            entry.data.get_or_insert_with(ManifestEntryData::new).size =
+                val[0].parse::<usize>().unwrap();
             entry.data.get_or_insert_with(ManifestEntryData::new).md5 = val[1].to_owned();
             finished = true;
-        },
-        _ => log::debug!("Ignoring line starting with '{}'", *kind as char)
+        }
+        _ => log::debug!("Ignoring line starting with '{}'", *kind as char),
     };
 
     Ok(finished)
@@ -294,7 +325,7 @@ fn add_manifest_line(entry: &mut ManifestEntry, kind: &char, data: &[u8]) -> Res
 
 struct ManifestLine {
     kind: char,
-    data: Vec<u8>
+    data: Vec<u8>,
 }
 
 impl ManifestLine {
@@ -311,11 +342,17 @@ impl ManifestLine {
         // remove trailing line break
         reader.fill_buf()?;
         reader.consume(1);
-        Ok(Self{ kind: kind as char, data })
+        Ok(Self {
+            kind: kind as char,
+            data,
+        })
     }
 }
 
-pub fn read_manifest<R: BufRead, T, F: FnMut(&ManifestEntry) -> Result<T, Box<dyn Error>>>(reader: &mut R, callback: &mut F) -> Result<(), Box<dyn Error>> {
+pub fn read_manifest<R: BufRead, T, F: FnMut(&ManifestEntry) -> Result<T, Box<dyn Error>>>(
+    reader: &mut R,
+    callback: &mut F,
+) -> Result<(), Box<dyn Error>> {
     let mut entry = ManifestEntry::new();
 
     let mut entryno = 0;
@@ -332,10 +369,13 @@ pub fn read_manifest<R: BufRead, T, F: FnMut(&ManifestEntry) -> Result<T, Box<dy
             Ok(true) => {
                 callback(&entry)?;
                 entry = ManifestEntry::new();
-            },
+            }
             Err(err) => {
                 log::debug!("Error in line {}: {:?}", entryno, err);
-                return Err(Box::new(ManifestReadError::new(&format!("{}: Corrupt line in manifest: {:?}", entryno, err))));
+                return Err(Box::new(ManifestReadError::new(&format!(
+                    "{}: Corrupt line in manifest: {:?}",
+                    entryno, err
+                ))));
             }
         }
     }
@@ -385,4 +425,3 @@ mod tests {
         assert_eq!(format!("{}", mode), "--xr--rwx");
     }
 }
-
