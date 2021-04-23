@@ -45,6 +45,7 @@ fn init_args_parser() -> clap::App<'static, 'static> {
                 .value_name("DIR")
                 .takes_value(true)
                 .empty_values(false)
+                .multiple(true)
                 .required(true),
         )
 }
