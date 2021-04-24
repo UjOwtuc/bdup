@@ -323,29 +323,35 @@ impl Backup {
         Ok(())
     }
 
+    fn top_level_data_dirs(&self) -> HashSet<PathBuf> {
+        assert!(!self.checksums.is_empty());
+        self.checksums
+            .keys()
+            .map(|entry| entry.components().take(1).collect())
+            .collect()
+    }
+
     fn unwanted_files(&self) -> Result<Vec<PathBuf>, Box<dyn Error>> {
         assert!(!self.checksums.is_empty());
+
+        let wanted_top_level = self.top_level_data_dirs();
+        log::debug!(
+            "Found required top-level directories in manifest: {:?}",
+            wanted_top_level
+        );
 
         let data_path = self.path.join("data");
         let iter = fs::read_dir(&data_path)?
             .filter_map(|entry| entry.ok())
-            .filter(|entry| {
-                if let Some(parent) = entry.path().parent() {
-                    if parent == data_path && entry.path().is_dir() {
-                        // assume directories directly below "data" are always needed (usually
-                        // those are "data/t" or "data/0000")
-                        return false;
-                    }
+            .filter_map(|entry| {
+                if let Ok(stripped) = entry.path().strip_prefix(&data_path) {
+                    Some(PathBuf::from(stripped))
+                } else {
+                    None
                 }
-                true
             })
-            .filter(|entry| {
-                if let Ok(path) = entry.path().strip_prefix(&data_path) {
-                    return !self.checksums.contains_key(path);
-                }
-                false
-            })
-            .map(|entry| entry.path());
+            .filter(|path| !wanted_top_level.contains(path) && !self.checksums.contains_key(path));
+
         Ok(iter.collect())
     }
 
@@ -707,5 +713,23 @@ mod test {
             Backup::new(&PathBuf::from("/0000001 some timestamp")).unwrap(),
             Backup::new(&PathBuf::from("/0000002 some timestamp")).unwrap()
         );
+    }
+
+    #[test]
+    fn top_level_dirs() {
+        let mut backup = Backup::new(&PathBuf::from("/0000001 some timestamp")).unwrap();
+        backup
+            .checksums
+            .insert(PathBuf::from("t/asd"), String::new());
+        backup
+            .checksums
+            .insert(PathBuf::from("t/asdf"), String::new());
+        backup
+            .checksums
+            .insert(PathBuf::from("x/asd"), String::new());
+        let mut expected = HashSet::new();
+        expected.insert(PathBuf::from("t"));
+        expected.insert(PathBuf::from("x"));
+        assert_eq!(backup.top_level_data_dirs(), expected);
     }
 }
