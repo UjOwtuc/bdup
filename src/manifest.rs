@@ -32,7 +32,6 @@ pub enum FileType {
     Plain,
     Directory,
     SoftLink,
-    HardLink,
     Metadata,
     Special,
 }
@@ -175,7 +174,9 @@ fn add_manifest_line(
                 .get_or_insert_with(ManifestEntryData::default)
                 .path = PathBuf::from(OsStr::from_bytes(data))
         }
-        'L' => entry.file_type = FileType::HardLink,
+        'L' => {
+            // hard links are only relevant on the client side, so we will just ignore them
+        }
         's' => {
             entry.file_type = FileType::Special;
             entry.path = PathBuf::from(OsStr::from_bytes(data));
@@ -197,15 +198,25 @@ fn add_manifest_line(
         }
         'x' => {
             let info = str::from_utf8(data)?;
-            let val = info.split(':').collect::<Vec<&str>>();
+            let mut val = info.split(':');
             entry
                 .data
                 .get_or_insert_with(ManifestEntryData::default)
-                .size = val[0].parse::<usize>()?;
+                .size = val
+                .next()
+                .ok_or_else(|| ManifestReadError::new("malformed checksum"))?
+                .parse::<usize>()?;
             entry
                 .data
                 .get_or_insert_with(ManifestEntryData::default)
-                .md5 = val[1].to_owned();
+                .md5 = val
+                .next()
+                .ok_or_else(|| ManifestReadError::new("malformed checksum"))?
+                .to_owned();
+
+            if val.next().is_some() {
+                return Err(Box::new(ManifestReadError::new("malformed checksum")));
+            }
             finished = true;
         }
         _ => log::debug!("Ignoring line starting with '{}'", *kind as char),
@@ -341,5 +352,79 @@ mod tests {
         assert_eq!(stat.change_time, 12);
         assert_eq!(stat.ch_flags, 13);
         assert_eq!(stat.compression, 15);
+    }
+
+    #[test]
+    fn manifest_entry_metadata() {
+        let mut entry = ManifestEntry::new();
+        let finished = add_manifest_line(&mut entry, &'m', b"some path").unwrap();
+        assert_eq!(entry.file_type, FileType::Metadata);
+        assert_eq!(entry.path, PathBuf::from("some path"));
+        assert!(!finished);
+    }
+
+    #[test]
+    fn manifest_entry_regular_file() {
+        let mut entry = ManifestEntry::new();
+        let finished = add_manifest_line(&mut entry, &'f', b"some path").unwrap();
+        assert_eq!(entry.file_type, FileType::Plain);
+        assert_eq!(entry.path, PathBuf::from("some path"));
+        assert!(!finished);
+    }
+
+    #[test]
+    fn manifest_entry_data_path() {
+        let mut entry = ManifestEntry::new();
+        let finished = add_manifest_line(&mut entry, &'t', b"some path").unwrap();
+        assert_eq!(entry.file_type, FileType::Unknown);
+        assert!(entry.data.is_some());
+        assert_eq!(entry.data.unwrap().path, PathBuf::from("some path"));
+        assert!(!finished);
+    }
+
+    #[test]
+    fn manifest_entry_special() {
+        let mut entry = ManifestEntry::new();
+        let finished = add_manifest_line(&mut entry, &'s', b"some path").unwrap();
+        assert_eq!(entry.file_type, FileType::Special);
+        assert_eq!(entry.path, PathBuf::from("some path"));
+        assert!(finished);
+    }
+
+    #[test]
+    fn manifest_entry_directory() {
+        let mut entry = ManifestEntry::new();
+        let finished = add_manifest_line(&mut entry, &'d', b"some path").unwrap();
+        assert_eq!(entry.file_type, FileType::Directory);
+        assert_eq!(entry.path, PathBuf::from("some path"));
+        assert!(finished);
+    }
+
+    #[test]
+    fn manifest_entry_symlink() {
+        let mut entry = ManifestEntry::new();
+        let mut finished = add_manifest_line(&mut entry, &'l', b"source path").unwrap();
+        assert!(!finished);
+
+        finished = add_manifest_line(&mut entry, &'l', b"target path").unwrap();
+        assert_eq!(entry.file_type, FileType::SoftLink);
+        assert_eq!(entry.path, PathBuf::from("source path"));
+        assert_eq!(entry.link_target, Some(PathBuf::from("target path")));
+        assert!(finished);
+    }
+
+    #[test]
+    fn manifest_malformed_checksum() {
+        let mut entry = ManifestEntry::new();
+        assert!(add_manifest_line(&mut entry, &'x', b"asdf").is_err());
+        assert!(add_manifest_line(&mut entry, &'x', b"a:sd:f").is_err());
+        assert!(add_manifest_line(&mut entry, &'x', b"asd:f").is_err());
+
+        let finished = add_manifest_line(&mut entry, &'x', b"1234:asdfgh").unwrap();
+        assert!(finished);
+        assert!(entry.data.is_some());
+        let data = entry.data.unwrap();
+        assert_eq!(data.size, 1234);
+        assert_eq!(data.md5, "asdfgh");
     }
 }
