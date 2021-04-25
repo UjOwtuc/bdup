@@ -1,4 +1,4 @@
-use chrono::NaiveDateTime;
+use derive_more::{Display, Error};
 use std::convert::TryInto;
 use std::error::Error;
 use std::ffi::OsStr;
@@ -7,7 +7,8 @@ use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
 use std::{fmt, str};
 
-#[derive(Debug)]
+#[derive(Debug, Display, Error)]
+#[display(fmt = "Manifest read error: {}", details)]
 pub struct ManifestReadError {
     details: String,
 }
@@ -22,18 +23,6 @@ impl ManifestReadError {
         ManifestReadError {
             details: msg.to_string(),
         }
-    }
-}
-
-impl fmt::Display for ManifestReadError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "{}", self.details)
-    }
-}
-
-impl Error for ManifestReadError {
-    fn description(&self) -> &str {
-        &self.details
     }
 }
 
@@ -111,10 +100,16 @@ pub struct Stat {
     pub compression: i32,
 }
 
+#[derive(Display, Debug, Error)]
+#[display(fmt = "Invalid char in base64 string: {}", c)]
+struct InvalidBase64Char {
+    c: char,
+}
+
 /// burp's (or bacula's?) own version of base64 encoding integer types. An encoded value consists
 /// of an optional leading '-' for negative values followed by one or more characters from the
 /// alphabet. Each character is worth 6 bits, there is no trailing padding.
-fn burp_decode_base64(value: &str) -> i64 {
+fn burp_decode_base64(value: &str) -> Result<i64, InvalidBase64Char> {
     let mut result: i64 = 0;
     let mut negative = false;
 
@@ -133,21 +128,19 @@ fn burp_decode_base64(value: &str) -> i64 {
             '0'..='9' => result += (c as u8 - b'0') as i64 + 32,
             '+' => result += 62,
             '/' => result += 63,
-            _ => panic!(),
+            _ => return Err(InvalidBase64Char { c }),
         }
     }
 
     if negative {
         result *= -1;
     }
-    result
+    Ok(result)
 }
 
 impl Stat {
     fn from_burp_string(line: &[u8]) -> Result<Self, Box<dyn Error>> {
-        let source = str::from_utf8(line).map_err(|err| {
-            ManifestReadError::new(&format!("Non utf8 chars in stat line: {:?}", err))
-        })?;
+        let source = str::from_utf8(line)?;
         let stat = source.split(' ').collect::<Vec<&str>>();
         if stat.len() < 16 {
             return Err(Box::new(ManifestReadError::new(&format!(
@@ -157,26 +150,22 @@ impl Stat {
         }
 
         Ok(Self {
-            containing_device: burp_decode_base64(stat[0]).try_into().map_err(|err| {
-                ManifestReadError::new(&format!("corrupt containing_device: {:?}", err))
-            })?,
-            inode: burp_decode_base64(stat[1])
-                .try_into()
-                .map_err(|err| ManifestReadError::new(&format!("corrupt inode: {:?}", err)))?,
-            mode: Mode::new(burp_decode_base64(stat[2])),
-            num_links: burp_decode_base64(stat[3]).try_into()?,
-            owner_id: burp_decode_base64(stat[4]).try_into()?,
-            group_id: burp_decode_base64(stat[5]).try_into()?,
-            device_id: burp_decode_base64(stat[6]).try_into()?,
-            size: burp_decode_base64(stat[7]).try_into()?,
-            blocksize: burp_decode_base64(stat[8]).try_into()?,
-            blocks: burp_decode_base64(stat[9]).try_into()?,
-            access_time: burp_decode_base64(stat[10]).try_into()?,
-            mod_time: burp_decode_base64(stat[11]).try_into()?,
-            change_time: burp_decode_base64(stat[12]).try_into()?,
-            ch_flags: burp_decode_base64(stat[13]).try_into()?,
+            containing_device: burp_decode_base64(stat[0])?.try_into()?,
+            inode: burp_decode_base64(stat[1])?.try_into()?,
+            mode: Mode::new(burp_decode_base64(stat[2])?),
+            num_links: burp_decode_base64(stat[3])?.try_into()?,
+            owner_id: burp_decode_base64(stat[4])?.try_into()?,
+            group_id: burp_decode_base64(stat[5])?.try_into()?,
+            device_id: burp_decode_base64(stat[6])?.try_into()?,
+            size: burp_decode_base64(stat[7])?.try_into()?,
+            blocksize: burp_decode_base64(stat[8])?.try_into()?,
+            blocks: burp_decode_base64(stat[9])?.try_into()?,
+            access_time: burp_decode_base64(stat[10])?.try_into()?,
+            mod_time: burp_decode_base64(stat[11])?.try_into()?,
+            change_time: burp_decode_base64(stat[12])?.try_into()?,
+            ch_flags: burp_decode_base64(stat[13])?.try_into()?,
             // stat[14] is namen "win_attr" in burp's source code. Never saw this one in real life
-            compression: burp_decode_base64(stat[15]).try_into()?,
+            compression: burp_decode_base64(stat[15])?.try_into()?,
         })
     }
 }
@@ -214,56 +203,6 @@ impl ManifestEntry {
             data: None,
             link_target: None,
         }
-    }
-}
-
-impl fmt::Display for ManifestEntry {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            f,
-            "{}",
-            match &self.file_type {
-                FileType::Directory => 'd',
-                FileType::SoftLink => 'l',
-                _ => '-',
-            }
-        )?;
-
-        let (owner, group, tstamp, mode) = if let Some(stat) = &self.stat {
-            (
-                format!("{}", stat.owner_id),
-                format!("{}", stat.group_id),
-                NaiveDateTime::from_timestamp(stat.mod_time.try_into().unwrap(), 0).to_string(),
-                format!("{}", stat.mode),
-            )
-        } else {
-            (
-                "?".to_string(),
-                "?".to_string(),
-                "?".to_string(),
-                "?".to_string(),
-            )
-        };
-
-        let size = if let Some(data) = &self.data {
-            data.size
-        } else {
-            0
-        };
-
-        write!(
-            f,
-            "{} {:10} {:10} {:8} {} {:?}",
-            mode, owner, group, size, tstamp, &self.path
-        )?;
-        if self.file_type == FileType::SoftLink {
-            if let Some(target) = &self.link_target {
-                write!(f, " -> {:?}", &target)?;
-            } else {
-                write!(f, " -> (unknown target)")?;
-            }
-        }
-        Ok(())
     }
 }
 
@@ -414,13 +353,13 @@ mod tests {
 
     #[test]
     fn decode_base64() {
-        assert_eq!(burp_decode_base64("Po"), 1000);
+        assert_eq!(burp_decode_base64("Po").unwrap(), 1000);
     }
 
     #[test]
-    #[should_panic]
     fn base64_invalid_char() {
-        burp_decode_base64(".");
+        let result = burp_decode_base64(".");
+        assert!(result.is_err());
     }
 
     #[test]
@@ -442,5 +381,11 @@ mod tests {
     fn format_mode() {
         let mode = Mode::new(0o147);
         assert_eq!(format!("{}", mode), "--xr--rwx");
+    }
+
+    #[test]
+    fn stat_too_short() {
+        let stat = Stat::from_burp_string(b"Po");
+        assert!(stat.is_err());
     }
 }
