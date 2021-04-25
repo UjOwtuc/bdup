@@ -50,7 +50,14 @@ impl Client {
         cloned.find_local_backups(dest)?;
 
         for source in &self.backups {
-            self.clone_backup(source, dest, &mut cloned, transfer_threads)?;
+            if source.is_finished() {
+                self.clone_backup(source, dest, &mut cloned, transfer_threads)?;
+            } else {
+                log::info!(
+                    "Skipping clone of {}, because it is not finished",
+                    source.path.display()
+                );
+            }
         }
 
         for backup in cloned
