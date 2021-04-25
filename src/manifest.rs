@@ -219,7 +219,12 @@ fn add_manifest_line(
             }
             finished = true;
         }
-        _ => log::debug!("Ignoring line starting with '{}'", *kind as char),
+        _ => {
+            return Err(Box::new(ManifestReadError::new(&format!(
+                "unknown entry type: {}",
+                *kind as char
+            ))))
+        }
     };
 
     Ok(finished)
@@ -416,9 +421,9 @@ mod tests {
     #[test]
     fn manifest_malformed_checksum() {
         let mut entry = ManifestEntry::new();
-        assert!(add_manifest_line(&mut entry, &'x', b"asdf").is_err());
-        assert!(add_manifest_line(&mut entry, &'x', b"a:sd:f").is_err());
-        assert!(add_manifest_line(&mut entry, &'x', b"asd:f").is_err());
+        assert!(add_manifest_line(&mut entry, &'x', b"no colon").is_err());
+        assert!(add_manifest_line(&mut entry, &'x', b"123:too:many:colons").is_err());
+        assert!(add_manifest_line(&mut entry, &'x', b"no int:f").is_err());
 
         let finished = add_manifest_line(&mut entry, &'x', b"1234:asdfgh").unwrap();
         assert!(finished);
@@ -426,5 +431,11 @@ mod tests {
         let data = entry.data.unwrap();
         assert_eq!(data.size, 1234);
         assert_eq!(data.md5, "asdfgh");
+    }
+
+    #[test]
+    fn manifest_invalid_entry_type() {
+        let mut entry = ManifestEntry::new();
+        assert!(add_manifest_line(&mut entry, &'K', b"whatever").is_err());
     }
 }
