@@ -97,10 +97,7 @@ impl Stat {
         let source = str::from_utf8(line)?;
         let stat = source.split(' ').collect::<Vec<&str>>();
         if stat.len() < 16 {
-            return Err(Box::new(ManifestReadError::new(&format!(
-                "Too few entries in stat line. Expected 16, found {}",
-                stat.len()
-            ))));
+            return Err(Box::new(ManifestReadError::new("Too few entries in stat")));
         }
 
         Ok(Self {
@@ -256,7 +253,7 @@ impl ManifestLine {
     }
 }
 
-pub fn read_manifest<R: BufRead, T, F: FnMut(&ManifestEntry) -> Result<T, Box<dyn Error>>>(
+pub fn read_manifest<R: BufRead, T, F: FnMut(ManifestEntry) -> Result<T, Box<dyn Error>>>(
     reader: &mut R,
     callback: &mut F,
 ) -> Result<(), Box<dyn Error>> {
@@ -274,7 +271,7 @@ pub fn read_manifest<R: BufRead, T, F: FnMut(&ManifestEntry) -> Result<T, Box<dy
         match add_manifest_line(&mut entry, &line.kind, &line.data) {
             Ok(false) => (),
             Ok(true) => {
-                callback(&entry)?;
+                callback(entry)?;
                 entry = ManifestEntry::new();
             }
             Err(err) => {
