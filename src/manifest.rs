@@ -1,5 +1,5 @@
 use chrono::NaiveDateTime;
-use std::convert::{TryFrom, TryInto};
+use std::convert::TryInto;
 use std::error::Error;
 use std::ffi::OsStr;
 use std::io::BufRead;
@@ -108,10 +108,7 @@ pub struct Stat {
     pub mod_time: u64,
     pub change_time: u64,
     pub ch_flags: u64,
-
     pub compression: i32,
-    // encryption: i32,
-    // salt: String
 }
 
 /// burp's (or bacula's?) own version of base64 encoding integer types. An encoded value consists
@@ -146,19 +143,17 @@ fn burp_decode_base64(value: &str) -> i64 {
     result
 }
 
-impl TryFrom<&[u8]> for Stat {
-    type Error = ManifestReadError;
-
-    fn try_from(line: &[u8]) -> Result<Self, Self::Error> {
+impl Stat {
+    fn from_burp_string(line: &[u8]) -> Result<Self, Box<dyn Error>> {
         let source = str::from_utf8(line).map_err(|err| {
             ManifestReadError::new(&format!("Non utf8 chars in stat line: {:?}", err))
         })?;
         let stat = source.split(' ').collect::<Vec<&str>>();
         if stat.len() < 16 {
-            return Err(ManifestReadError::new(&format!(
+            return Err(Box::new(ManifestReadError::new(&format!(
                 "Too few entries in stat line. Expected 16, found {}",
                 stat.len()
-            )));
+            ))));
         }
 
         Ok(Self {
@@ -169,19 +164,19 @@ impl TryFrom<&[u8]> for Stat {
                 .try_into()
                 .map_err(|err| ManifestReadError::new(&format!("corrupt inode: {:?}", err)))?,
             mode: Mode::new(burp_decode_base64(stat[2])),
-            num_links: burp_decode_base64(stat[3]).try_into().unwrap(),
-            owner_id: burp_decode_base64(stat[4]).try_into().unwrap(),
-            group_id: burp_decode_base64(stat[5]).try_into().unwrap(),
-            device_id: burp_decode_base64(stat[6]).try_into().unwrap(),
-            size: burp_decode_base64(stat[7]).try_into().unwrap(),
-            blocksize: burp_decode_base64(stat[8]).try_into().unwrap(),
-            blocks: burp_decode_base64(stat[9]).try_into().unwrap(),
-            access_time: burp_decode_base64(stat[10]).try_into().unwrap(),
-            mod_time: burp_decode_base64(stat[11]).try_into().unwrap(),
-            change_time: burp_decode_base64(stat[12]).try_into().unwrap(),
-            ch_flags: burp_decode_base64(stat[13]).try_into().unwrap(),
+            num_links: burp_decode_base64(stat[3]).try_into()?,
+            owner_id: burp_decode_base64(stat[4]).try_into()?,
+            group_id: burp_decode_base64(stat[5]).try_into()?,
+            device_id: burp_decode_base64(stat[6]).try_into()?,
+            size: burp_decode_base64(stat[7]).try_into()?,
+            blocksize: burp_decode_base64(stat[8]).try_into()?,
+            blocks: burp_decode_base64(stat[9]).try_into()?,
+            access_time: burp_decode_base64(stat[10]).try_into()?,
+            mod_time: burp_decode_base64(stat[11]).try_into()?,
+            change_time: burp_decode_base64(stat[12]).try_into()?,
+            ch_flags: burp_decode_base64(stat[13]).try_into()?,
             // stat[14] is namen "win_attr" in burp's source code. Never saw this one in real life
-            compression: burp_decode_base64(stat[15]).try_into().unwrap(),
+            compression: burp_decode_base64(stat[15]).try_into()?,
         })
     }
 }
@@ -234,12 +229,21 @@ impl fmt::Display for ManifestEntry {
             }
         )?;
 
-        let owner = format!("{}", self.stat.as_ref().unwrap().owner_id);
-        let group = format!("{}", self.stat.as_ref().unwrap().group_id);
-        let tstamp = NaiveDateTime::from_timestamp(
-            self.stat.as_ref().unwrap().mod_time.try_into().unwrap(),
-            0,
-        );
+        let (owner, group, tstamp, mode) = if let Some(stat) = &self.stat {
+            (
+                format!("{}", stat.owner_id),
+                format!("{}", stat.group_id),
+                NaiveDateTime::from_timestamp(stat.mod_time.try_into().unwrap(), 0).to_string(),
+                format!("{}", stat.mode),
+            )
+        } else {
+            (
+                "?".to_string(),
+                "?".to_string(),
+                "?".to_string(),
+                "?".to_string(),
+            )
+        };
 
         let size = if let Some(data) = &self.data {
             data.size
@@ -250,12 +254,7 @@ impl fmt::Display for ManifestEntry {
         write!(
             f,
             "{} {:10} {:10} {:8} {} {:?}",
-            self.stat.as_ref().unwrap().mode,
-            owner,
-            group,
-            size,
-            tstamp,
-            &self.path
+            mode, owner, group, size, tstamp, &self.path
         )?;
         if self.file_type == FileType::SoftLink {
             if let Some(target) = &self.link_target {
@@ -276,7 +275,7 @@ fn add_manifest_line(
     let mut finished = false;
 
     match kind {
-        'r' => entry.stat = Some(Stat::try_from(data)?),
+        'r' => entry.stat = Some(Stat::from_burp_string(data)?),
         'm' => {
             entry.file_type = FileType::Metadata;
             entry.path = PathBuf::from(OsStr::from_bytes(data));
@@ -310,10 +309,9 @@ fn add_manifest_line(
             }
         }
         'x' => {
-            let info = str::from_utf8(data).unwrap();
+            let info = str::from_utf8(data)?;
             let val = info.split(':').collect::<Vec<&str>>();
-            entry.data.get_or_insert_with(ManifestEntryData::new).size =
-                val[0].parse::<usize>().unwrap();
+            entry.data.get_or_insert_with(ManifestEntryData::new).size = val[0].parse::<usize>()?;
             entry.data.get_or_insert_with(ManifestEntryData::new).md5 = val[1].to_owned();
             finished = true;
         }
@@ -391,6 +389,27 @@ mod tests {
         let mut buf = std::io::Cursor::new("a0004ASDF\n");
         let line = ManifestLine::read(&mut buf).unwrap();
         assert_eq!(line.data, b"ASDF");
+    }
+
+    #[test]
+    fn manifest_short_line() {
+        let mut buf = std::io::Cursor::new("t0004a\n"); // length 4 != "a".length()
+        let result = ManifestLine::read(&mut buf);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn manifest_entry_invalid_base64() {
+        let mut entry = ManifestEntry::new();
+        let result = add_manifest_line(&mut entry, &'r', b".");
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn manifest_entry_invalid_order() {
+        let mut entry = ManifestEntry::new();
+        let result = add_manifest_line(&mut entry, &'r', b".");
+        assert!(result.is_err());
     }
 
     #[test]
