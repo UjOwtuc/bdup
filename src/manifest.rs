@@ -38,7 +38,6 @@ impl Error for ManifestReadError {
 }
 
 /// Unix mode type
-#[derive(Default)]
 pub struct Mode {
     mode: u32,
 }
@@ -94,7 +93,6 @@ pub enum FileType {
     Special,
 }
 
-#[derive(Default)]
 pub struct Stat {
     pub containing_device: u64,
     pub inode: u64,
@@ -110,7 +108,6 @@ pub struct Stat {
     pub mod_time: u64,
     pub change_time: u64,
     pub ch_flags: u64,
-    win_attr: String, // don't know, what this might be
 
     pub compression: i32,
     // encryption: i32,
@@ -164,33 +161,28 @@ impl TryFrom<&[u8]> for Stat {
             )));
         }
 
-        let mut result = Self {
-            ..Default::default()
-        };
-        result.containing_device = burp_decode_base64(stat[0]).try_into().map_err(|err| {
-            ManifestReadError::new(&format!("corrupt containing_device: {:?}", err))
-        })?;
-        result.inode = burp_decode_base64(stat[1])
-            .try_into()
-            .map_err(|err| ManifestReadError::new(&format!("corrupt inode: {:?}", err)))?;
-        result.mode = Mode::new(burp_decode_base64(stat[2]));
-        result.num_links = burp_decode_base64(stat[3]).try_into().unwrap();
-        result.owner_id = burp_decode_base64(stat[4]).try_into().unwrap();
-        result.group_id = burp_decode_base64(stat[5]).try_into().unwrap();
-        result.device_id = burp_decode_base64(stat[6]).try_into().unwrap();
-        result.size = burp_decode_base64(stat[7]).try_into().unwrap();
-        result.blocksize = burp_decode_base64(stat[8]).try_into().unwrap();
-        result.blocks = burp_decode_base64(stat[9]).try_into().unwrap();
-        result.access_time = burp_decode_base64(stat[10]).try_into().unwrap();
-        result.mod_time = burp_decode_base64(stat[11]).try_into().unwrap();
-        result.change_time = burp_decode_base64(stat[12]).try_into().unwrap();
-        result.ch_flags = burp_decode_base64(stat[13]).try_into().unwrap();
-        result.win_attr = stat[14].to_owned();
-        result.compression = burp_decode_base64(stat[15]).try_into().unwrap();
-        // result.encryption = burp_decode_base64(stat[16]).try_into().unwrap();
-        // result.salt = stat[17].to_owned();
-
-        Ok(result)
+        Ok(Self {
+            containing_device: burp_decode_base64(stat[0]).try_into().map_err(|err| {
+                ManifestReadError::new(&format!("corrupt containing_device: {:?}", err))
+            })?,
+            inode: burp_decode_base64(stat[1])
+                .try_into()
+                .map_err(|err| ManifestReadError::new(&format!("corrupt inode: {:?}", err)))?,
+            mode: Mode::new(burp_decode_base64(stat[2])),
+            num_links: burp_decode_base64(stat[3]).try_into().unwrap(),
+            owner_id: burp_decode_base64(stat[4]).try_into().unwrap(),
+            group_id: burp_decode_base64(stat[5]).try_into().unwrap(),
+            device_id: burp_decode_base64(stat[6]).try_into().unwrap(),
+            size: burp_decode_base64(stat[7]).try_into().unwrap(),
+            blocksize: burp_decode_base64(stat[8]).try_into().unwrap(),
+            blocks: burp_decode_base64(stat[9]).try_into().unwrap(),
+            access_time: burp_decode_base64(stat[10]).try_into().unwrap(),
+            mod_time: burp_decode_base64(stat[11]).try_into().unwrap(),
+            change_time: burp_decode_base64(stat[12]).try_into().unwrap(),
+            ch_flags: burp_decode_base64(stat[13]).try_into().unwrap(),
+            // stat[14] is namen "win_attr" in burp's source code. Never saw this one in real life
+            compression: burp_decode_base64(stat[15]).try_into().unwrap(),
+        })
     }
 }
 
@@ -213,7 +205,7 @@ impl ManifestEntryData {
 pub struct ManifestEntry {
     file_type: FileType,
     pub path: PathBuf,
-    pub stat: Stat,
+    pub stat: Option<Stat>,
     pub data: Option<ManifestEntryData>,
     link_target: Option<PathBuf>,
 }
@@ -223,7 +215,7 @@ impl ManifestEntry {
         Self {
             file_type: FileType::Unknown,
             path: PathBuf::new(),
-            stat: Stat::default(),
+            stat: None,
             data: None,
             link_target: None,
         }
@@ -242,9 +234,12 @@ impl fmt::Display for ManifestEntry {
             }
         )?;
 
-        let owner = format!("{}", self.stat.owner_id);
-        let group = format!("{}", self.stat.group_id);
-        let tstamp = NaiveDateTime::from_timestamp(self.stat.mod_time.try_into().unwrap(), 0);
+        let owner = format!("{}", self.stat.as_ref().unwrap().owner_id);
+        let group = format!("{}", self.stat.as_ref().unwrap().group_id);
+        let tstamp = NaiveDateTime::from_timestamp(
+            self.stat.as_ref().unwrap().mod_time.try_into().unwrap(),
+            0,
+        );
 
         let size = if let Some(data) = &self.data {
             data.size
@@ -255,7 +250,12 @@ impl fmt::Display for ManifestEntry {
         write!(
             f,
             "{} {:10} {:10} {:8} {} {:?}",
-            self.stat.mode, owner, group, size, tstamp, &self.path
+            self.stat.as_ref().unwrap().mode,
+            owner,
+            group,
+            size,
+            tstamp,
+            &self.path
         )?;
         if self.file_type == FileType::SoftLink {
             if let Some(target) = &self.link_target {
@@ -276,7 +276,7 @@ fn add_manifest_line(
     let mut finished = false;
 
     match kind {
-        'r' => entry.stat = Stat::try_from(data)?,
+        'r' => entry.stat = Some(Stat::try_from(data)?),
         'm' => {
             entry.file_type = FileType::Metadata;
             entry.path = PathBuf::from(OsStr::from_bytes(data));
