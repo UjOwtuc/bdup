@@ -125,20 +125,11 @@ impl Stat {
     }
 }
 
+#[derive(Default)]
 pub struct ManifestEntryData {
     pub path: PathBuf,
     pub size: usize,
     pub md5: String,
-}
-
-impl ManifestEntryData {
-    fn new() -> Self {
-        Self {
-            path: PathBuf::new(),
-            size: 0,
-            md5: "".to_string(),
-        }
-    }
 }
 
 pub struct ManifestEntry {
@@ -179,8 +170,10 @@ fn add_manifest_line(
             entry.path = PathBuf::from(OsStr::from_bytes(data));
         }
         't' => {
-            entry.data.get_or_insert_with(ManifestEntryData::new).path =
-                PathBuf::from(OsStr::from_bytes(data))
+            entry
+                .data
+                .get_or_insert_with(ManifestEntryData::default)
+                .path = PathBuf::from(OsStr::from_bytes(data))
         }
         'L' => entry.file_type = FileType::HardLink,
         's' => {
@@ -205,8 +198,14 @@ fn add_manifest_line(
         'x' => {
             let info = str::from_utf8(data)?;
             let val = info.split(':').collect::<Vec<&str>>();
-            entry.data.get_or_insert_with(ManifestEntryData::new).size = val[0].parse::<usize>()?;
-            entry.data.get_or_insert_with(ManifestEntryData::new).md5 = val[1].to_owned();
+            entry
+                .data
+                .get_or_insert_with(ManifestEntryData::default)
+                .size = val[0].parse::<usize>()?;
+            entry
+                .data
+                .get_or_insert_with(ManifestEntryData::default)
+                .md5 = val[1].to_owned();
             finished = true;
         }
         _ => log::debug!("Ignoring line starting with '{}'", *kind as char),
@@ -309,6 +308,7 @@ mod tests {
     #[test]
     fn decode_base64() {
         assert_eq!(burp_decode_base64("Po").unwrap(), 1000);
+        assert_eq!(burp_decode_base64("-/").unwrap(), -63);
     }
 
     #[test]
@@ -321,5 +321,25 @@ mod tests {
     fn stat_too_short() {
         let stat = Stat::from_burp_string(b"Po");
         assert!(stat.is_err());
+    }
+
+    #[test]
+    fn parse_stat_line() {
+        let stat = Stat::from_burp_string(b"A B C D E F G H I J K L M N O P").unwrap();
+        assert_eq!(stat.containing_device, 0);
+        assert_eq!(stat.inode, 1);
+        assert_eq!(stat.mode, 2);
+        assert_eq!(stat.num_links, 3);
+        assert_eq!(stat.owner_id, 4);
+        assert_eq!(stat.group_id, 5);
+        assert_eq!(stat.device_id, 6);
+        assert_eq!(stat.size, 7);
+        assert_eq!(stat.blocksize, 8);
+        assert_eq!(stat.blocks, 9);
+        assert_eq!(stat.access_time, 10);
+        assert_eq!(stat.mod_time, 11);
+        assert_eq!(stat.change_time, 12);
+        assert_eq!(stat.ch_flags, 13);
+        assert_eq!(stat.compression, 15);
     }
 }
