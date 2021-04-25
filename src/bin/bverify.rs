@@ -1,5 +1,5 @@
+use derive_more::{Display, Error};
 use std::error::Error;
-use std::fmt;
 use std::path::PathBuf;
 use std::str::FromStr;
 
@@ -50,17 +50,12 @@ fn init_args_parser() -> clap::App<'static, 'static> {
         )
 }
 
-#[derive(Debug)]
+#[derive(Debug, Display, Error)]
+#[display(fmt = "{}/{} backups failed to verify", errors, total)]
 struct VerifyError {
     errors: usize,
     total: usize,
 }
-impl fmt::Display for VerifyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}/{} backups failed to verify", self.errors, self.total)
-    }
-}
-impl Error for VerifyError {}
 
 fn main() -> Result<(), Box<dyn Error>> {
     let matches = init_args_parser().get_matches();
@@ -112,5 +107,66 @@ fn main() -> Result<(), Box<dyn Error>> {
         }))
     } else {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn require_positional_args() {
+        assert!(init_args_parser()
+            .get_matches_from_safe(vec!["bverify"])
+            .is_err());
+    }
+
+    #[test]
+    fn single_positional_arg() {
+        let matches = init_args_parser().get_matches_from(vec!["bverify", "single dir"]);
+        let values: Vec<&str> = matches.values_of("backup").unwrap().collect();
+        assert_eq!(
+            values,
+            ["single dir"].iter().cloned().collect::<Vec<&str>>()
+        );
+    }
+
+    #[test]
+    fn multiple_positional_args() {
+        let matches = init_args_parser().get_matches_from(vec!["bverify", "dir1", "dir 2", "dir3"]);
+        let values: Vec<&str> = matches.values_of("backup").unwrap().collect();
+        assert_eq!(
+            values,
+            ["dir1", "dir 2", "dir3"]
+                .iter()
+                .cloned()
+                .collect::<Vec<&str>>()
+        );
+    }
+
+    #[test]
+    fn arg_log_level_setting() {
+        let res = init_args_parser().get_matches_from(vec!["bverify", "-l", "debug", "dir"]);
+        assert_eq!(res.value_of("log_level"), Some("debug"));
+    }
+
+    #[test]
+    fn arg_log_level_validator() {
+        let res =
+            init_args_parser().get_matches_from_safe(vec!["bverify", "-l", "something", "dir"]);
+        assert!(res.is_err());
+    }
+
+    #[test]
+    fn arg_iothreads_setting() {
+        let res = init_args_parser().get_matches_from(vec!["bverify", "-t", "5781", "dir"]);
+        assert_eq!(res.value_of("iothreads"), Some("5781"));
+    }
+
+    #[test]
+    fn arg_iothreads_validator() {
+        assert!(init_args_parser()
+            .get_matches_from_safe(vec!["bverify", "--io-threads", "no int", "dir"])
+            .is_err());
     }
 }
