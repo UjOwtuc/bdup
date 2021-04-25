@@ -5,7 +5,7 @@ use std::ffi::OsStr;
 use std::io::BufRead;
 use std::os::unix::ffi::OsStrExt;
 use std::path::PathBuf;
-use std::{fmt, str};
+use std::str;
 
 #[derive(Debug, Display, Error)]
 #[display(fmt = "Manifest read error: {}", details)]
@@ -26,51 +26,6 @@ impl ManifestReadError {
     }
 }
 
-/// Unix mode type
-pub struct Mode {
-    mode: u32,
-}
-
-impl Mode {
-    fn new<T>(mode: T) -> Self
-    where
-        T: Into<i64>,
-    {
-        Self {
-            mode: (mode.into() & 0xFFFFFFFF).try_into().unwrap(),
-        }
-    }
-
-    /// Format a single octet like "ls -l" would do it.
-    fn format_mode_part(part: u32, dest: &mut String) {
-        dest.push_str(match part & 4 {
-            0 => "-",
-            _ => "r",
-        });
-        dest.push_str(match part & 2 {
-            0 => "-",
-            _ => "w",
-        });
-        dest.push_str(match part & 1 {
-            0 => "-",
-            _ => "x",
-        });
-    }
-}
-
-impl fmt::Display for Mode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let mut readable = String::new();
-        Mode::format_mode_part((self.mode & 0o700) >> 6, &mut readable);
-        Mode::format_mode_part((self.mode & 0o70) >> 3, &mut readable);
-        Mode::format_mode_part(self.mode, &mut readable);
-        if self.mode & 0o4000 == 0o4000 {
-            readable.replace_range(2..3, "s");
-        }
-        write!(f, "{}", readable)
-    }
-}
-
 #[derive(PartialEq, Debug)]
 pub enum FileType {
     Unknown,
@@ -85,7 +40,7 @@ pub enum FileType {
 pub struct Stat {
     pub containing_device: u64,
     pub inode: u64,
-    pub mode: Mode,
+    pub mode: u32,
     pub num_links: u64,
     pub owner_id: u64,
     pub group_id: u64,
@@ -152,7 +107,7 @@ impl Stat {
         Ok(Self {
             containing_device: burp_decode_base64(stat[0])?.try_into()?,
             inode: burp_decode_base64(stat[1])?.try_into()?,
-            mode: Mode::new(burp_decode_base64(stat[2])?),
+            mode: burp_decode_base64(stat[2])?.try_into()?,
             num_links: burp_decode_base64(stat[3])?.try_into()?,
             owner_id: burp_decode_base64(stat[4])?.try_into()?,
             group_id: burp_decode_base64(stat[5])?.try_into()?,
@@ -360,27 +315,6 @@ mod tests {
     fn base64_invalid_char() {
         let result = burp_decode_base64(".");
         assert!(result.is_err());
-    }
-
-    #[test]
-    fn format_part() {
-        let mut val = String::new();
-        Mode::format_mode_part(0o7, &mut val);
-        assert_eq!(val, "rwx");
-
-        val.clear();
-        Mode::format_mode_part(0o6, &mut val);
-        assert_eq!(val, "rw-");
-
-        val.clear();
-        Mode::format_mode_part(0o1, &mut val);
-        assert_eq!(val, "--x");
-    }
-
-    #[test]
-    fn format_mode() {
-        let mode = Mode::new(0o147);
-        assert_eq!(format!("{}", mode), "--xr--rwx");
     }
 
     #[test]
