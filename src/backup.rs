@@ -236,7 +236,7 @@ impl Backup {
         let mut files_in_manifest = HashSet::new();
         manifest::read_manifest(
             &mut self.manifest_reader()?,
-            &mut |entry: &manifest::ManifestEntry| {
+            &mut |entry: manifest::ManifestEntry| {
                 if let Some(data) = &entry.data {
                     self.checksums
                         .insert(data.path.to_owned(), data.md5.to_owned());
@@ -364,7 +364,7 @@ impl Backup {
             log::info!("Loading checksums from backup {:?}", self.path);
             let mut reader = self.manifest_reader()?;
 
-            manifest::read_manifest(&mut reader, &mut |entry: &manifest::ManifestEntry| {
+            manifest::read_manifest(&mut reader, &mut |entry: manifest::ManifestEntry| {
                 if let Some(data) = &entry.data {
                     self.checksums
                         .insert(data.path.to_owned(), data.md5.to_owned());
@@ -402,7 +402,7 @@ impl Backup {
 
         log::debug!("Verifying checksums for backup {}", self.path.display());
         let mut files_total = 0;
-        manifest::read_manifest(&mut reader, &mut |entry: &manifest::ManifestEntry| {
+        manifest::read_manifest(&mut reader, &mut |entry: manifest::ManifestEntry| {
             if let Some(data) = &entry.data {
                 self.checksums
                     .insert(data.path.to_owned(), data.md5.to_owned());
