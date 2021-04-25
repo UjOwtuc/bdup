@@ -11,6 +11,15 @@ cache:
     - .cargo
     - target/
 
+test:audit:
+  stage: test
+  tags:
+    - docker
+  script:
+    - cargo audit
+  only:
+    - schedules
+
 test:cargo:
   stage: test
   tags:
