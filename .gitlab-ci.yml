@@ -3,13 +3,25 @@
 image: $CI_REGISTRY/docker/rust/rust:buster
 
 stages:
-  - test
   - build
+  - test
+  - deploy
 
 cache:
   paths:
-    - .cargo
     - target/
+    - Cargo.lock
+
+build:
+  stage: build
+  tags:
+    - docker
+  script:
+    - rustc --version && cargo --version  # Print version info for debugging
+    - cargo build --release
+  artifacts:
+    paths:
+      - target/release/bdup
 
 test:audit:
   stage: test
@@ -17,27 +29,51 @@ test:audit:
     - docker
   script:
     - cargo audit
-  only:
-    - schedules
 
 test:cargo:
   stage: test
   tags:
     - docker
   script:
-    - rustc --version && cargo --version  # Print version info for debugging
     - cargo tarpaulin --verbose --out Xml
+  coverage: '/^\d+.\d+% coverage,/'
   artifacts:
     reports:
       cobertura: cobertura.xml
 
-build:
-  stage: build
+upload:
+  stage: deploy
   tags:
     - docker
   script:
-    - cargo build --release
+    - export version=$(cargo pkgid | cut -d# -f2)
+    - export arch=$(uname -m)
+    - strip --strip-unneeded target/release/bdup
+    - strip --strip-unneeded target/release/bverify
+    # curl --fail-with-body will be available with curl 7.76.0
+    - >-
+      curl --fail
+      --cacert "$CI_SERVER_TLS_CA_FILE"
+      --header "JOB-TOKEN: $CI_JOB_TOKEN"
+      --upload-file target/release/bdup
+      "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/bdup.$arch/$version/bdup"
+    - >-
+      curl --fail
+      --cacert "$CI_SERVER_TLS_CA_FILE"
+      --header "JOB-TOKEN: $CI_JOB_TOKEN"
+      --upload-file target/release/bverify
+      "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/bdup.$arch/$version/bverify"
+  only:
+    - master
+
+pages:
+  stage: deploy
+  tags:
+    - docker
+  script:
+    - cargo doc --no-deps
+    - cp -a target/doc/ public/
   artifacts:
     paths:
-      - target/release/bdup
+      - public
 
