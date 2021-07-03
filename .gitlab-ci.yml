@@ -11,12 +11,15 @@ cache:
   paths:
     - target/
     - Cargo.lock
+    - Cargo.toml
 
 build:
   stage: build
   tags:
     - docker
   script:
+    - export BDUP_VERSION=$(git describe --tags --always)
+    - envsubst < Cargo.toml.in > Cargo.toml
     - rustc --version && cargo --version  # Print version info for debugging
     - cargo build --release
   artifacts:
