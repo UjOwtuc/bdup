@@ -21,7 +21,6 @@ build:
     - export BDUP_VERSION=$(git describe --tags --always)
     - echo "$BDUP_VERSION"
     - sed "s/\$BDUP_VERSION/$BDUP_VERSION/g" Cargo.toml.in > Cargo.toml
-    - cat Cargo.toml
     - rustc --version && cargo --version  # Print version info for debugging
     - cargo build --release
   artifacts:
