@@ -1,3 +1,4 @@
 /target
 cobertura.xml
 Cargo.lock
+Cargo.toml
