@@ -59,7 +59,7 @@ upload:
     - export arch=$(uname -m)
     - echo "arch=$arch"
     - >-
-      curl
+      curl -v
       --cacert "$CI_SERVER_TLS_CA_FILE"
       --header "JOB-TOKEN: $CI_JOB_TOKEN"
       --upload-file Cargo.toml
@@ -83,14 +83,14 @@ upload:
   only:
     - master
 
-pages:
-  stage: deploy
-  tags:
-    - docker
-  script:
-    - cargo doc --no-deps
-    - cp -a target/doc/ public/
-  artifacts:
-    paths:
-      - public
+# pages:
+#   stage: deploy
+#   tags:
+#     - docker
+#   script:
+#     - cargo doc --no-deps
+#     - cp -a target/doc/ public/
+#   artifacts:
+#     paths:
+#       - public
 
