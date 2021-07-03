@@ -47,9 +47,9 @@ pub struct Stat {
     pub size: u64,
     pub blocksize: u64,
     pub blocks: u64,
-    pub access_time: u64,
-    pub mod_time: u64,
-    pub change_time: u64,
+    pub access_time: i64,
+    pub mod_time: i64,
+    pub change_time: i64,
     pub ch_flags: u64,
     pub compression: i32,
 }
@@ -111,9 +111,9 @@ impl Stat {
             size: burp_decode_base64(stat[7])?.try_into()?,
             blocksize: burp_decode_base64(stat[8])?.try_into()?,
             blocks: burp_decode_base64(stat[9])?.try_into()?,
-            access_time: burp_decode_base64(stat[10])?.try_into()?,
-            mod_time: burp_decode_base64(stat[11])?.try_into()?,
-            change_time: burp_decode_base64(stat[12])?.try_into()?,
+            access_time: burp_decode_base64(stat[10])?,
+            mod_time: burp_decode_base64(stat[11])?,
+            change_time: burp_decode_base64(stat[12])?,
             ch_flags: burp_decode_base64(stat[13])?.try_into()?,
             // stat[14] is namen "win_attr" in burp's source code. Never saw this one in real life
             compression: burp_decode_base64(stat[15])?.try_into()?,
@@ -322,6 +322,7 @@ mod tests {
     fn decode_base64() {
         assert_eq!(burp_decode_base64("Po").unwrap(), 1000);
         assert_eq!(burp_decode_base64("-/").unwrap(), -63);
+        assert_eq!(burp_decode_base64("-B").unwrap(), -1);
     }
 
     #[test]
