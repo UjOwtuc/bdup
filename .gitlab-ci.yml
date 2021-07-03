@@ -19,6 +19,7 @@ build:
     - docker
   script:
     - export BDUP_VERSION=$(git describe --tags --always)
+    - sed "s/\$BDUP_VERSION/$BDUP_VERSION/g" Cargo.toml.in > Cargo.toml
     - envsubst < Cargo.toml.in > Cargo.toml
     - rustc --version && cargo --version  # Print version info for debugging
     - cargo build --release
