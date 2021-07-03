@@ -65,6 +65,17 @@ impl fmt::Display for InvalidNameError {
 }
 impl Error for InvalidNameError {}
 
+#[derive(Debug)]
+struct CopyThreadPanicedError {
+    message: String,
+}
+impl fmt::Display for CopyThreadPanicedError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+impl Error for CopyThreadPanicedError {}
+
 impl Backup {
     pub fn new(path: &Path) -> Result<Self, Box<dyn Error>> {
         let dir = path
@@ -143,7 +154,11 @@ impl Backup {
         }
 
         if let Some(base_backup) = base_backup {
-            log::debug!("Cloning previous backup {:?}", base_backup.path);
+            log::debug!(
+                "Cloning previous backup {} to {}",
+                base_backup.path.display(),
+                self.path.display()
+            );
             let status = Command::new("btrfs")
                 .arg("subvolume")
                 .arg("snapshot")
@@ -159,11 +174,11 @@ impl Backup {
                 .filter(|entry| entry.path().is_file())
                 .for_each(move |entry| {
                     fs::remove_file(entry.path()).unwrap_or_else(|_| {
-                        panic!("Could not remove regular file {:?}", entry.path())
+                        panic!("Could not remove regular file {}", entry.path().display())
                     })
                 });
         } else {
-            log::info!("Creating empty volume");
+            log::info!("Creating empty volume at {}", self.path.display());
             let status = Command::new("btrfs")
                 .arg("subvolume")
                 .arg("create")
@@ -435,6 +450,12 @@ impl Backup {
                     })
                     .unwrap();
                 });
+
+                if worker_pool.panic_count() > 0 {
+                    return Err(Box::new(CopyThreadPanicedError {
+                        message: "See thread's backtrace for more information".to_string(),
+                    }));
+                }
             }
             Ok(())
         })?;
