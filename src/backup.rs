@@ -147,6 +147,14 @@ impl Backup {
     }
 
     fn create_volume(&self, base_backup: &Option<&Backup>) -> Result<(), Box<dyn Error>> {
+        if self.path.exists() {
+            log::info!(
+                "Destination directory {} already exists. Not cloning anything.",
+                self.path.display()
+            );
+            return Ok(());
+        }
+
         if let Some(parent_dir) = self.path.parent() {
             if !parent_dir.exists() {
                 fs::create_dir(parent_dir)?;
