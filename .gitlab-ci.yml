@@ -13,19 +13,19 @@ cache:
     - Cargo.lock
     - Cargo.toml
 
-build:
-  stage: build
-  tags:
-    - docker
-  script:
-    - export BDUP_VERSION=$(git describe --tags --always)
-    - echo "$BDUP_VERSION"
-    - sed "s/\$BDUP_VERSION/$BDUP_VERSION/g" Cargo.toml.in > Cargo.toml
-    - rustc --version && cargo --version  # Print version info for debugging
-    # - cargo build --release
-  artifacts:
-    paths:
-      - target/release/bdup
+# build:
+#   stage: build
+#   tags:
+#     - docker
+#   script:
+#     - export BDUP_VERSION=$(git describe --tags --always)
+#     - echo "$BDUP_VERSION"
+#     - sed "s/\$BDUP_VERSION/$BDUP_VERSION/g" Cargo.toml.in > Cargo.toml
+#     - rustc --version && cargo --version  # Print version info for debugging
+#     # - cargo build --release
+#   artifacts:
+#     paths:
+#       - target/release/bdup
 
 # test:audit:
 #   stage: test
@@ -50,12 +50,16 @@ upload:
   tags:
     - docker
   script:
+    - export BDUP_VERSION=$(git describe --tags --always)
+    - echo "$BDUP_VERSION"
+    - sed "s/\$BDUP_VERSION/$BDUP_VERSION/g" Cargo.toml.in > Cargo.toml
+
     - export version=$(cargo pkgid | cut -d# -f2)
     - echo "version=$version"
     - export arch=$(uname -m)
     - echo "arch=$arch"
     - >-
-      curl --fail
+      curl
       --cacert "$CI_SERVER_TLS_CA_FILE"
       --header "JOB-TOKEN: $CI_JOB_TOKEN"
       --upload-file Cargo.toml
