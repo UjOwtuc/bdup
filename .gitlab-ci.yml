@@ -13,37 +13,37 @@ cache:
     - Cargo.lock
     - Cargo.toml
 
-# build:
-#   stage: build
-#   tags:
-#     - docker
-#   script:
-#     - export BDUP_VERSION=$(git describe --tags --always)
-#     - echo "$BDUP_VERSION"
-#     - sed "s/\$BDUP_VERSION/$BDUP_VERSION/g" Cargo.toml.in > Cargo.toml
-#     - rustc --version && cargo --version  # Print version info for debugging
-#     # - cargo build --release
-#   artifacts:
-#     paths:
-#       - target/release/bdup
+build:
+  stage: build
+  tags:
+    - docker
+  script:
+    - export BDUP_VERSION=$(git describe --tags --always)
+    - echo "$BDUP_VERSION"
+    - sed "s/\$BDUP_VERSION/$BDUP_VERSION/g" Cargo.toml.in > Cargo.toml
+    - rustc --version && cargo --version  # Print version info for debugging
+    - cargo build --release
+  artifacts:
+    paths:
+      - target/release/bdup
 
-# test:audit:
-#   stage: test
-#   tags:
-#     - docker
-#   script:
-#     - cargo audit
+test:audit:
+  stage: test
+  tags:
+    - docker
+  script:
+    - cargo audit
 
-# test:cargo:
-#   stage: test
-#   tags:
-#     - docker
-#   script:
-#     - cargo tarpaulin --verbose --out Xml
-#   coverage: '/^\d+.\d+% coverage,/'
-#   artifacts:
-#     reports:
-#       cobertura: cobertura.xml
+test:cargo:
+  stage: test
+  tags:
+    - docker
+  script:
+    - cargo tarpaulin --verbose --out Xml
+  coverage: '/^\d+.\d+% coverage,/'
+  artifacts:
+    reports:
+      cobertura: cobertura.xml
 
 upload:
   stage: deploy
@@ -58,39 +58,33 @@ upload:
     - echo "version=$version"
     - export arch=$(uname -m)
     - echo "arch=$arch"
+
+    - strip --strip-unneeded target/release/bdup
+    - strip --strip-unneeded target/release/bverify
+    # curl --fail-with-body will be available with curl 7.76.0
     - >-
-      curl -v
+      curl --fail
       --cacert "$CI_SERVER_TLS_CA_FILE"
       --header "JOB-TOKEN: $CI_JOB_TOKEN"
-      --upload-file Cargo.toml
-      "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/bdup.$arch/$version/Cargo.toml"
-
-    # - strip --strip-unneeded target/release/bdup
-    # - strip --strip-unneeded target/release/bverify
-    # curl --fail-with-body will be available with curl 7.76.0
-    # - >-
-    #   curl --fail
-    #   --cacert "$CI_SERVER_TLS_CA_FILE"
-    #   --header "JOB-TOKEN: $CI_JOB_TOKEN"
-    #   --upload-file target/release/bdup
-    #   "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/bdup.$arch/$version/bdup"
-    # - >-
-    #   curl --fail
-    #   --cacert "$CI_SERVER_TLS_CA_FILE"
-    #   --header "JOB-TOKEN: $CI_JOB_TOKEN"
-    #   --upload-file target/release/bverify
-    #   "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/bdup.$arch/$version/bverify"
+      --upload-file target/release/bdup
+      "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/bdup.$arch/$version/bdup"
+    - >-
+      curl --fail
+      --cacert "$CI_SERVER_TLS_CA_FILE"
+      --header "JOB-TOKEN: $CI_JOB_TOKEN"
+      --upload-file target/release/bverify
+      "${CI_API_V4_URL}/projects/${CI_PROJECT_ID}/packages/generic/bdup.$arch/$version/bverify"
   only:
     - master
 
-# pages:
-#   stage: deploy
-#   tags:
-#     - docker
-#   script:
-#     - cargo doc --no-deps
-#     - cp -a target/doc/ public/
-#   artifacts:
-#     paths:
-#       - public
+pages:
+  stage: deploy
+  tags:
+    - docker
+  script:
+    - cargo doc --no-deps
+    - cp -a target/doc/ public/
+  artifacts:
+    paths:
+      - public
 
