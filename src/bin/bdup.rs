@@ -6,6 +6,10 @@ use std::str::FromStr;
 use threadpool::ThreadPool;
 
 use burp::client::Client;
+use burp::client::LocalClient;
+
+#[cfg(feature = "http")]
+use burp::remoteclient::RemoteClient;
 
 #[derive(Serialize, Deserialize)]
 #[serde(default)]
@@ -180,7 +184,6 @@ fn main() {
         panic!("Could not parse config: {:?}", err);
     });
     if matches.is_present("dump_config") {
-        // println!("{}", toml::to_string_pretty(&config).unwrap_or_else(|err| panic!("Could not serialize config: {:?}", err)));
         println!(
             "{}",
             serde_yaml::to_string(&config)
@@ -206,12 +209,12 @@ fn main() {
         .apply()
         .unwrap_or_else(|err| panic!("Log init failed: {:?}", err));
 
-    let mut clients = Vec::new();
+    let mut clients: Vec<Box<dyn Client>> = Vec::new();
     for conf in config.clients {
         log::debug!("Loading list of existing backups for client {}", &conf.name);
-        let mut client = Client::new(&conf.name);
+        let mut client = create_client(&conf);
         client
-            .find_local_backups(&PathBuf::from(&conf.storage_url))
+            .find_backups(&conf.storage_url)
             .unwrap_or_else(|err| {
                 log::error!(
                     "Could not find backups for client {}: {:?}",
@@ -225,7 +228,25 @@ fn main() {
     clone_backups(&clients, &config.dest_dir, config.io_threads);
 }
 
-fn clone_backups(clients: &[Client], dest: &Path, num_threads: usize) {
+#[cfg(feature = "http")]
+fn create_remote_client(conf: &ClientConfig) -> Box<dyn Client> {
+    Box::new(RemoteClient::new(&conf.name))
+}
+
+#[cfg(not(feature = "http"))]
+fn create_remote_client(conf: &ClientConfig) -> Box<dyn Client> {
+    panic!("Unable to create remote client for URL {:?}, because bdup is compiled without \"http\" feature", conf.storage_url);
+}
+
+fn create_client(conf: &ClientConfig) -> Box<dyn Client> {
+    if conf.storage_url.starts_with('/') || conf.storage_url.starts_with("file:/") {
+        Box::new(LocalClient::new(&conf.name))
+    } else {
+        create_remote_client(conf)
+    }
+}
+
+fn clone_backups(clients: &[Box<dyn Client>], dest: &Path, num_threads: usize) {
     if !dest.exists() {
         fs::create_dir(dest)
             .unwrap_or_else(|err| panic!("Could not create destination directory: {:?}", err));
@@ -233,8 +254,8 @@ fn clone_backups(clients: &[Client], dest: &Path, num_threads: usize) {
 
     let transfer_threads = ThreadPool::new(num_threads);
     for client in clients {
-        if let Err(error) = client.clone_backups_to(&dest.join(&client.name), &transfer_threads) {
-            log::error!("Error cloning backups of {}: {:?}", client.name, error);
+        if let Err(error) = client.clone_backups_to(&dest.join(&client.name()), &transfer_threads) {
+            log::error!("Error cloning backups of {}: {:?}", client.name(), error);
         }
     }
 }

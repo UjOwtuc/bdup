@@ -46,12 +46,16 @@ pub struct TransferResult {
 }
 
 #[derive(Debug)]
-pub struct Backup {
-    pub path: PathBuf,
-    pub id: u64,
-    timestamp: String,
-    checksums: HashMap<PathBuf, String>,
+struct NotLocalError {
+    message: String,
 }
+
+impl fmt::Display for NotLocalError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "{}", self.message)
+    }
+}
+impl Error for NotLocalError {}
 
 #[derive(Debug)]
 struct InvalidNameError {
@@ -76,19 +80,37 @@ impl fmt::Display for CopyThreadPanicedError {
 }
 impl Error for CopyThreadPanicedError {}
 
+#[derive(Debug)]
+pub struct Backup {
+    base_url: String,
+    name: String,
+    pub id: u64,
+    timestamp: String,
+    checksums: HashMap<PathBuf, String>,
+    is_local: bool,
+}
+
 impl Backup {
-    pub fn new(path: &Path) -> Result<Self, Box<dyn Error>> {
-        let dir = path
-            .file_name()
-            .expect("Invalid path for local backup: no file_name component")
-            .to_string_lossy();
-        let (id, timestamp) = Self::parse_name(&dir)?;
+    pub fn new(base_url: &str, name: &str, is_local: bool) -> Result<Self, Box<dyn Error>> {
+        let (id, timestamp) = Self::parse_name(name)?;
         Ok(Self {
-            path: path.to_owned(),
+            base_url: base_url.to_owned(),
+            name: name.to_owned(),
             id,
             timestamp,
             checksums: HashMap::new(),
+            is_local,
         })
+    }
+
+    pub fn from_path(path: &Path) -> Result<Self, Box<dyn Error>> {
+        let parent = path.parent().ok_or_else(|| InvalidNameError {
+            message: format!("Path {:?} has no parent", path),
+        })?;
+        let dir = path.file_name().ok_or_else(|| InvalidNameError {
+            message: format!("Path {:?} has file name component", path),
+        })?;
+        Self::new(&parent.to_string_lossy(), &dir.to_string_lossy(), true)
     }
 
     fn parse_name(name: &str) -> Result<(u64, String), Box<dyn Error>> {
@@ -102,12 +124,29 @@ impl Backup {
         }
     }
 
+    pub fn path(&self) -> PathBuf {
+        PathBuf::from(&self.base_url).join(&self.name)
+    }
+
+    pub fn is_local_backup(&self) -> bool {
+        self.is_local
+    }
+
     pub fn delete(&mut self) -> Result<(), Box<dyn Error>> {
-        log::debug!("Removing backup at {}", self.path.display());
+        if !self.is_local {
+            return Err(Box::new(NotLocalError {
+                message: format!(
+                    "Unable to delete remote backup {}/{}",
+                    self.base_url, self.name
+                ),
+            }));
+        }
+        let path = self.path();
+        log::debug!("Removing backup at {}", path.display());
         let status = Command::new("btrfs")
             .arg("subvolume")
             .arg("delete")
-            .arg(self.path.to_owned())
+            .arg(path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .status()?;
@@ -133,13 +172,14 @@ impl Backup {
     fn manifest_reader(
         &self,
     ) -> Result<io::BufReader<flate2::read::GzDecoder<fs::File>>, Box<dyn Error>> {
+        // TODO fetch
         let manifest = fs::File::open(self.file_path(None, &OsString::from("manifest.gz")))?;
         let gz = GzDecoder::new(manifest);
         Ok(io::BufReader::new(gz))
     }
 
     fn file_path(&self, prefix: Option<&str>, path: &OsStr) -> PathBuf {
-        let mut real_path = PathBuf::from(&self.path);
+        let mut real_path = self.path();
         if let Some(prefix) = prefix {
             real_path = real_path.join(prefix);
         }
@@ -147,15 +187,25 @@ impl Backup {
     }
 
     fn create_volume(&self, base_backup: &Option<&Backup>) -> Result<(), Box<dyn Error>> {
-        if self.path.exists() {
+        if !self.is_local {
+            return Err(Box::new(NotLocalError {
+                message: format!(
+                    "Unable to create a remote volume for backup {}/{}",
+                    self.base_url, self.name
+                ),
+            }));
+        }
+
+        let path = self.path();
+        if path.exists() {
             log::info!(
                 "Destination directory {} already exists. Not cloning anything.",
-                self.path.display()
+                path.display()
             );
             return Ok(());
         }
 
-        if let Some(parent_dir) = self.path.parent() {
+        if let Some(parent_dir) = path.parent() {
             if !parent_dir.exists() {
                 fs::create_dir(parent_dir)?;
             }
@@ -164,20 +214,20 @@ impl Backup {
         if let Some(base_backup) = base_backup {
             log::debug!(
                 "Cloning previous backup {} to {}",
-                base_backup.path.display(),
-                self.path.display()
+                base_backup.path().display(),
+                path.display()
             );
             let status = Command::new("btrfs")
                 .arg("subvolume")
                 .arg("snapshot")
-                .arg(base_backup.path.to_owned())
-                .arg(self.path.to_owned())
+                .arg(base_backup.path())
+                .arg(&path)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .status()?;
             assert!(status.success());
 
-            fs::read_dir(self.path.to_owned())?
+            fs::read_dir(&path)?
                 .map(|result| result.unwrap())
                 .filter(|entry| entry.path().is_file())
                 .for_each(move |entry| {
@@ -186,18 +236,18 @@ impl Backup {
                     })
                 });
         } else {
-            log::info!("Creating empty volume at {}", self.path.display());
+            log::info!("Creating empty volume at {}", path.display());
             let status = Command::new("btrfs")
                 .arg("subvolume")
                 .arg("create")
-                .arg(self.path.to_owned())
+                .arg(&path)
                 .stdin(Stdio::null())
                 .stdout(Stdio::null())
                 .status()?;
             assert!(status.success());
-            fs::create_dir(self.path.join("data"))?;
+            fs::create_dir(path.join("data"))?;
         }
-        fs::File::create(self.path.join(".bdup.partial"))?;
+        fs::File::create(path.join(".bdup.partial"))?;
         Ok(())
     }
 
@@ -231,8 +281,17 @@ impl Backup {
         base_backup: &Option<&Backup>,
         fetch_callback: &dyn Fn(&OsStr, &Path, &Sender<TransferResult>),
     ) -> Result<(), Box<dyn Error>> {
+        if !self.is_local {
+            return Err(Box::new(NotLocalError {
+                message: format!(
+                    "Unable to clone to remote backup {}/{}",
+                    self.base_url, self.name
+                ),
+            }));
+        }
+        let path = self.path();
         if self.is_finished() {
-            log::info!("Cloning to {:?} already finished. Skipping", self.path);
+            log::info!("Cloning to {:?} already finished. Skipping", path);
             return Ok(());
         }
 
@@ -249,11 +308,11 @@ impl Backup {
         log::debug!("Fetching metadata");
         for filename in Self::metadata_files() {
             files_total += 1;
-            let dest_path = self.path.join(filename);
+            let dest_path = path.join(filename);
             fetch_callback(OsStr::new(filename), &dest_path, &tx.clone());
         }
         let (mut files_ok, mut transfer_size) =
-            self.wait_for_transfer(&rx, Some(self.path.join("manifest.gz").as_os_str()));
+            self.wait_for_transfer(&rx, Some(path.join("manifest.gz").as_os_str()));
 
         log::debug!("Starting data transfers");
         let mut files_in_manifest = HashSet::new();
@@ -277,7 +336,7 @@ impl Backup {
                         }
                     }
                     if !copied {
-                        let dest_path = self.path.join("data").join(&data_path);
+                        let dest_path = path.join("data").join(&data_path);
                         fetch_callback(
                             &PathBuf::from("data").join(data_path).into_os_string(),
                             &dest_path,
@@ -330,11 +389,11 @@ impl Backup {
         let errors = files_total - files_ok - files_from_base;
         if errors == 0 {
             log::info!("Cloning finished successfully: {} files total, {} from base backup, {} transferred", files_total, files_from_base, format_bytes(transfer_size));
-            fs::remove_file(self.path.join(".bdup.partial"))?;
+            fs::remove_file(path.join(".bdup.partial"))?;
             let status = Command::new("btrfs")
                 .arg("property")
                 .arg("set")
-                .arg(self.path.to_owned())
+                .arg(path)
                 .arg("ro")
                 .arg("true")
                 .stdin(Stdio::null())
@@ -355,6 +414,7 @@ impl Backup {
     }
 
     fn unwanted_files(&self) -> Result<Vec<PathBuf>, Box<dyn Error>> {
+        assert!(self.is_local);
         assert!(!self.checksums.is_empty());
 
         let wanted_top_level = self.top_level_data_dirs();
@@ -363,7 +423,8 @@ impl Backup {
             wanted_top_level
         );
 
-        let data_path = self.path.join("data");
+        let path = self.path();
+        let data_path = path.join("data");
         let iter = fs::read_dir(&data_path)?
             .filter_map(|entry| entry.ok())
             .filter_map(|entry| {
@@ -384,7 +445,7 @@ impl Backup {
 
     pub fn load_checksums(&mut self) -> Result<(), Box<dyn Error>> {
         if self.checksums.is_empty() {
-            log::info!("Loading checksums from backup {:?}", self.path);
+            log::info!("Loading checksums from backup {:?}", self.path());
             let mut reader = self.manifest_reader()?;
 
             manifest::read_manifest(&mut reader, &mut |entry: manifest::ManifestEntry| {
@@ -399,31 +460,35 @@ impl Backup {
     }
 
     pub fn is_finished(&self) -> bool {
-        self.path.join("manifest.gz").exists() && !self.path.join(".bdup.partial").exists()
+        // TODO remote check
+        self.path().join("manifest.gz").exists() && !self.path().join(".bdup.partial").exists()
     }
 
     fn get_checksums(&self) -> &HashMap<PathBuf, String> {
         if self.checksums.is_empty() {
             log::debug!(
                 "getting empty checksum map from backup {}",
-                self.path.display()
+                self.path().display()
             );
         }
         &self.checksums
     }
 
     pub fn verify(&mut self, worker_threads: usize) -> Result<u64, Box<dyn Error>> {
-        let data_path = self.path.join("data");
+        assert!(self.is_local);
+
+        let path = self.path();
+        let data_path = path.join("data");
         let mut files_in_manifest = HashSet::new();
 
-        let manifest = fs::File::open(self.path.join("manifest.gz"))?;
+        let manifest = fs::File::open(path.join("manifest.gz"))?;
         let gz = GzDecoder::new(manifest);
         let mut reader = io::BufReader::new(gz);
 
         let worker_pool = ThreadPool::new(worker_threads);
         let (tx, rx) = channel();
 
-        log::debug!("Verifying checksums for backup {}", self.path.display());
+        log::debug!("Verifying checksums for backup {}", path.display());
         let mut files_total = 0;
         manifest::read_manifest(&mut reader, &mut |entry: manifest::ManifestEntry| {
             if let Some(data) = &entry.data {
@@ -499,7 +564,7 @@ impl Backup {
             };
         }
 
-        log::debug!("Searching for unwanted files in {}", self.path.display());
+        log::debug!("Searching for unwanted files in {}", path.display());
         let unwanted = self.unwanted_files()?;
         if !unwanted.is_empty() {
             log::info!(
@@ -597,7 +662,7 @@ mod test {
 
     #[test]
     fn backup_new() {
-        let backup = Backup::new(&PathBuf::from(
+        let backup = Backup::from_path(&PathBuf::from(
             "/some/distant/path/0000001 2021-04-11 00:00:00",
         ))
         .unwrap();
@@ -620,7 +685,7 @@ mod test {
 
     #[test]
     fn file_path() {
-        let backup = Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap();
+        let backup = Backup::from_path(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap();
         assert_eq!(
             backup.file_path(None, &OsString::from("filename")),
             PathBuf::from("/0000001 2021-04-11 00:00:00/filename")
@@ -650,14 +715,14 @@ mod test {
             source: OsString::from("source path"),
             dest: OsString::from("third dest path"),
             size: 123,
-            error: error,
+            error,
         })
         .unwrap_or_else(|err| panic!("send failed: {:?}", err));
     }
 
     #[test]
     fn wait_for_named_transfer() {
-        let backup = Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap();
+        let backup = Backup::from_path(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap();
         let (tx, rx) = channel();
         let sender = thread::spawn(move || send_file_results(tx, None));
         let (num, size) = backup.wait_for_transfer(&rx, Some(&OsString::from("second dest path")));
@@ -670,7 +735,7 @@ mod test {
 
     #[test]
     fn wait_for_all_transfer() {
-        let backup = Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap();
+        let backup = Backup::from_path(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap();
         let (tx, rx) = channel();
         let sender = thread::spawn(move || send_file_results(tx, None));
         let (num, size) = backup.wait_for_transfer(&rx, None);
@@ -683,7 +748,7 @@ mod test {
 
     #[test]
     fn wait_for_transfer_errors() {
-        let backup = Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap();
+        let backup = Backup::from_path(&PathBuf::from("/0000001 2021-04-11 00:00:00")).unwrap();
         let (tx, rx) = channel();
         let sender = thread::spawn(move || send_file_results(tx, Some("test error".to_string())));
         let (num, _size_ignored) = backup.wait_for_transfer(&rx, None);
@@ -696,19 +761,19 @@ mod test {
     #[test]
     fn dir_name() {
         assert_eq!(
-            Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00"))
+            Backup::from_path(&PathBuf::from("/0000001 2021-04-11 00:00:00"))
                 .unwrap()
                 .dir_name(),
             "0000001 2021-04-11 00:00:00"
         );
         assert_eq!(
-            Backup::new(&PathBuf::from("/9876543 asd asd ! | äöüß"))
+            Backup::from_path(&PathBuf::from("/9876543 asd asd ! | äöüß"))
                 .unwrap()
                 .dir_name(),
             "9876543 asd asd ! | äöüß"
         );
         assert_eq!(
-            Backup::new(&PathBuf::from("/ignore/any/path/before/backup/9999999 x"))
+            Backup::from_path(&PathBuf::from("/ignore/any/path/before/backup/9999999 x"))
                 .unwrap()
                 .dir_name(),
             "9999999 x"
@@ -718,35 +783,37 @@ mod test {
     #[test]
     fn get_checksums() {
         // getting an empty checksum map does not make sense but is not an error
-        assert!(Backup::new(&PathBuf::from("/0000001 2021-04-11 00:00:00"))
-            .unwrap()
-            .get_checksums()
-            .is_empty());
+        assert!(
+            Backup::from_path(&PathBuf::from("/0000001 2021-04-11 00:00:00"))
+                .unwrap()
+                .get_checksums()
+                .is_empty()
+        );
     }
 
     #[test]
     fn backup_equal() {
         assert_eq!(
-            Backup::new(&PathBuf::from("/0000001 some timestamp")).unwrap(),
-            Backup::new(&PathBuf::from("/0000001 some timestamp")).unwrap()
+            Backup::from_path(&PathBuf::from("/0000001 some timestamp")).unwrap(),
+            Backup::from_path(&PathBuf::from("/0000001 some timestamp")).unwrap()
         );
 
         // different timestamp
         assert_ne!(
-            Backup::new(&PathBuf::from("/0000001 some timestamp")).unwrap(),
-            Backup::new(&PathBuf::from("/0000001 other timestamp")).unwrap()
+            Backup::from_path(&PathBuf::from("/0000001 some timestamp")).unwrap(),
+            Backup::from_path(&PathBuf::from("/0000001 other timestamp")).unwrap()
         );
 
         // different id
         assert_ne!(
-            Backup::new(&PathBuf::from("/0000001 some timestamp")).unwrap(),
-            Backup::new(&PathBuf::from("/0000002 some timestamp")).unwrap()
+            Backup::from_path(&PathBuf::from("/0000001 some timestamp")).unwrap(),
+            Backup::from_path(&PathBuf::from("/0000002 some timestamp")).unwrap()
         );
     }
 
     #[test]
     fn top_level_dirs() {
-        let mut backup = Backup::new(&PathBuf::from("/0000001 some timestamp")).unwrap();
+        let mut backup = Backup::from_path(&PathBuf::from("/0000001 some timestamp")).unwrap();
         backup
             .checksums
             .insert(PathBuf::from("t/asd"), String::new());

@@ -82,13 +82,13 @@ fn main() -> Result<(), Box<dyn Error>> {
     let num_threads = matches.value_of("iothreads").unwrap().parse::<usize>()?;
     for path in matches.values_of("backup").unwrap() {
         total_backups += 1;
-        match Backup::new(&PathBuf::from(path)) {
+        match Backup::from_path(&PathBuf::from(path)) {
             Ok(mut backup) => {
                 if let Err(err) = backup.verify(num_threads) {
                     errors += 1;
                     log::error!(
                         "Verify of backup {} failed: {:?}",
-                        backup.path.display(),
+                        backup.path().display(),
                         err
                     );
                 }
@@ -125,23 +125,14 @@ mod test {
     fn single_positional_arg() {
         let matches = init_args_parser().get_matches_from(vec!["bverify", "single dir"]);
         let values: Vec<&str> = matches.values_of("backup").unwrap().collect();
-        assert_eq!(
-            values,
-            ["single dir"].iter().cloned().collect::<Vec<&str>>()
-        );
+        assert_eq!(values, ["single dir"].to_vec());
     }
 
     #[test]
     fn multiple_positional_args() {
         let matches = init_args_parser().get_matches_from(vec!["bverify", "dir1", "dir 2", "dir3"]);
         let values: Vec<&str> = matches.values_of("backup").unwrap().collect();
-        assert_eq!(
-            values,
-            ["dir1", "dir 2", "dir3"]
-                .iter()
-                .cloned()
-                .collect::<Vec<&str>>()
-        );
+        assert_eq!(values, ["dir1", "dir 2", "dir3"].to_vec());
     }
 
     #[test]
