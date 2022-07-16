@@ -2,7 +2,7 @@
 name = "bdup"
 version = "$BDUP_VERSION"
 authors = ["Karsten Borgwaldt <kb@spambri.de>"]
-edition = "2018"
+edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [lib]
@@ -36,8 +36,5 @@ serde = { version = "1.0", features = ["derive"] }
 serde_derive = "1.0"
 serde_yaml = { version = "0.8", optional = true }
 derive_more = "0.99"
-
-[dependencies.clap]
-version = "2.33"
-default-features = false
+clap = { version = "3", features = ["cargo"] }
 

@@ -92,14 +92,14 @@ fn read_config(args: &clap::ArgMatches) -> Result<Config, Box<dyn Error>> {
     Ok(config)
 }
 
-fn init_args_parser() -> clap::App<'static, 'static> {
+fn init_args_parser() -> clap::Command<'static> {
     clap::App::new("bdup")
         .version(clap::crate_version!())
         .author("Karsten Borgwaldt <bdup@spambri.de>")
         .about("Duplicates burp backups")
         .arg(
             clap::Arg::with_name("log_level")
-                .short("l")
+                .short('l')
                 .long("log-level")
                 .help("Set log level")
                 .possible_values(&["trace", "debug", "info", "warn", "error", "off"])
@@ -110,7 +110,7 @@ fn init_args_parser() -> clap::App<'static, 'static> {
         )
         .arg(
             clap::Arg::with_name("client")
-                .short("c")
+                .short('c')
                 .long("client")
                 .help("Define client. Format: name=URL")
                 .value_name("CLIENT")
@@ -118,7 +118,7 @@ fn init_args_parser() -> clap::App<'static, 'static> {
                 .number_of_values(1)
                 .takes_value(true)
                 .empty_values(false)
-                .validator(|v: String| -> Result<(), String> {
+                .validator(|v: &str| -> Result<(), String> {
                     if v.contains('=') {
                         Ok(())
                     } else {
@@ -128,7 +128,7 @@ fn init_args_parser() -> clap::App<'static, 'static> {
         )
         .arg(
             clap::Arg::with_name("local_clients")
-                .short("L")
+                .short('L')
                 .long("local-clients")
                 .help("Autodetect local clients in directory DIR")
                 .value_name("DIR")
@@ -136,7 +136,7 @@ fn init_args_parser() -> clap::App<'static, 'static> {
         )
         .arg(
             clap::Arg::with_name("dest_dir")
-                .short("d")
+                .short('d')
                 .long("dest-dir")
                 .help("Destination directory")
                 .value_name("DIR")
@@ -145,7 +145,7 @@ fn init_args_parser() -> clap::App<'static, 'static> {
         )
         .arg(
             clap::Arg::with_name("config_file")
-                .short("f")
+                .short('f')
                 .long("config")
                 .help("Read config from FILE")
                 .value_name("FILE")
@@ -154,20 +154,20 @@ fn init_args_parser() -> clap::App<'static, 'static> {
         )
         .arg(
             clap::Arg::with_name("dump_config")
-                .short("C")
+                .short('C')
                 .long("dump-config")
                 .help("Dump config to stdout and exit"),
         )
         .arg(
             clap::Arg::with_name("iothreads")
-                .short("t")
+                .short('t')
                 .long("io-threads")
                 .help("Thread pool size for I/O operations (i.e. copying files)")
                 .value_name("NUM")
                 .takes_value(true)
                 .empty_values(false)
                 .default_value("4")
-                .validator(|v: String| -> Result<(), String> {
+                .validator(|v: &str| -> Result<(), String> {
                     if let Ok(num) = v.parse::<usize>() {
                         if num > 0 {
                             return Ok(());

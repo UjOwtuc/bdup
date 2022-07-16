@@ -5,14 +5,14 @@ use std::str::FromStr;
 
 use burp::backup::Backup;
 
-fn init_args_parser() -> clap::App<'static, 'static> {
-    clap::App::new("bverify")
+fn init_args_parser() -> clap::Command<'static> {
+    clap::Command::new("bverify")
         .version(clap::crate_version!())
         .author("Karsten Borgwaldt <bdup@spambri.de>")
         .about("Verifies burp backups")
         .arg(
             clap::Arg::with_name("log_level")
-                .short("l")
+                .short('l')
                 .long("log-level")
                 .help("Set log level")
                 .possible_values(&["trace", "debug", "info", "warn", "error", "off"])
@@ -23,14 +23,14 @@ fn init_args_parser() -> clap::App<'static, 'static> {
         )
         .arg(
             clap::Arg::with_name("iothreads")
-                .short("t")
+                .short('t')
                 .long("io-threads")
                 .help("Thread pool size for I/O operations (i.e. copying files)")
                 .value_name("NUM")
                 .takes_value(true)
                 .empty_values(false)
                 .default_value("4")
-                .validator(|v: String| -> Result<(), String> {
+                .validator(|v: &str| -> Result<(), String> {
                     if let Ok(num) = v.parse::<usize>() {
                         if num > 0 {
                             return Ok(());
