@@ -26,7 +26,7 @@ impl ManifestReadError {
     }
 }
 
-#[derive(PartialEq, Debug)]
+#[derive(PartialEq, Eq, Debug)]
 pub enum FileType {
     Unknown,
     Plain,
