@@ -15,7 +15,7 @@ struct Args {
 
     /// Thread pool size for I/O operations (i.e. copying files)
     #[arg(short = 't', long, default_value_t = 4, value_parser = clap::value_parser!(u64).range(1..))]
-    iothreads: usize,
+    iothreads: u64,
 
     /// Directories of backups to verify
     ///
@@ -56,7 +56,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         total_backups += 1;
         match Backup::from_path(&PathBuf::from(path)) {
             Ok(mut backup) => {
-                if let Err(err) = backup.verify(num_threads) {
+                if let Err(err) = backup.verify(num_threads.try_into()?) {
                     errors += 1;
                     log::error!(
                         "Verify of backup {} failed: {:?}",

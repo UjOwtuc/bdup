@@ -68,7 +68,7 @@ fn read_config(args: &Args) -> Result<Config, Box<dyn Error>> {
         config.dest_dir = PathBuf::from(path);
     }
     if let Some(num) = args.iothreads {
-        config.io_threads = num;
+        config.io_threads = num.try_into()?;
     }
     config.clients.extend(args.client.to_vec());
     for dir in &args.local_clients {
@@ -116,7 +116,7 @@ struct Args {
 
     /// Thread pool size for I/O operations (i.e. copying files)
     #[arg(short = 't', long)]
-    iothreads: Option<usize>,
+    iothreads: Option<u64>,
 }
 
 fn main() {
