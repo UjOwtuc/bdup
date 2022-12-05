@@ -1,3 +1,0 @@
-### GitLab pages redirects
-# there is no index.html in generated docs root, so redirect requests without path to burp's docs
-/bdup	/bdup/doc/bdup
