@@ -6,6 +6,7 @@ use std::path::PathBuf;
 use burp::backup::Backup;
 
 #[derive(Parser, Debug)]
+#[command(author, version, about = "Verifies burp backups")]
 struct Args {
     /// Set log level
     ///

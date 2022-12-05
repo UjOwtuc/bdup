@@ -3,7 +3,7 @@ name = "bdup"
 version = "0.0.0"
 authors = ["Karsten Borgwaldt <kb@spambri.de>"]
 edition = "2021"
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+description = "Duplicates burp backups"
 
 [lib]
 name = "burp"

@@ -87,6 +87,7 @@ fn parse_client_arg(input: &str) -> Result<ClientConfig, String> {
 }
 
 #[derive(Parser, Debug)]
+#[command(author, version, about)]
 struct Args {
     /// Set log level
     ///
