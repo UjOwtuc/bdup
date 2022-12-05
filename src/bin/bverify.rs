@@ -2,6 +2,8 @@ use clap::Parser;
 use derive_more::{Display, Error};
 use std::error::Error;
 use std::path::PathBuf;
+use time::macros::format_description;
+use time::OffsetDateTime;
 
 use burp::backup::Backup;
 
@@ -37,9 +39,18 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     fern::Dispatch::new()
         .format(|out, message, record| {
+            let tstamp = match OffsetDateTime::now_local() {
+                Ok(time) => time.format(format_description!(
+                    "[year]-[month]-[day] [hour]:[minute]:[second]"
+                )),
+                _ => OffsetDateTime::now_utc().format(format_description!(
+                    "[year]-[month]-[day] [hour]:[minute]:[second] UTC"
+                )),
+            }
+            .unwrap();
             out.finish(format_args!(
-                "{}[{}][{}] {}",
-                chrono::Local::now().format("[%Y-%m-%d][%H:%M:%S]"),
+                "{} [{}][{}] {}",
+                tstamp,
                 record.target(),
                 record.level(),
                 message
