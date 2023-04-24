@@ -219,7 +219,7 @@ fn add_manifest_line(
         _ => {
             return Err(Box::new(ManifestReadError::new(&format!(
                 "unknown entry type: {}",
-                *kind as char
+                *kind
             ))))
         }
     };
