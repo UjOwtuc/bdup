@@ -16,6 +16,8 @@ jobs:
     steps:
       - uses: actions/checkout@v3
 
+      - run: git fetch --unshallow
+
       - uses: actions/cache@v3
         with:
           key: ${{ runner.os }}-cargo
@@ -27,6 +29,13 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
+
+      - name: add version to Cargo.toml
+        run: |
+          mkdir -p cargo.tmp
+          cp Cargo.toml cargo.tmp/
+          sed -i "s/^version\\s*=\\s*\"0.0.0\"/version = \"$(git describe --tags --always)\"/" cargo.tmp/Cargo.toml
+          cargo verify-project --manifest-path cargo.tmp/Cargo.toml && mv cargo.tmp/Cargo.toml . || true
 
       - run: cargo build --release
 
