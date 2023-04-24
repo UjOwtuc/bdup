@@ -1,0 +1,38 @@
+# vim: set ft=yaml ts=2 sw=2 et :
+---
+
+name: Rust
+
+"on":
+  workflow_dispatch: {}
+  push: {}
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - uses: actions/cache@v3
+        with:
+          key: ${{ runner.os }}-cargo
+          path: |-
+            ~/.cargo
+            target
+            */target
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - run: cargo build --release
+
+      - run: cargo test --no-fail-fast
+
+      - run: cargo fmt --all -- --check
+
+      - run: cargo clippy --all-targets --all-features
+
